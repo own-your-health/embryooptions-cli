@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+.DS_Store
+
+# Never commit real Embryo Options data: no portal captures, HAR files or raw
+# answers. Test data is synthetic and built in the tests.
+/captures
+*.har
+*.raw.json
+*.raw.html
+*.ndjson
