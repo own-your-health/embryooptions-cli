@@ -35,3 +35,4 @@
 - The repository moved to own-your-health
   (github.com/own-your-health/embryooptions-cli); `self-update`, `cargo
   install --git` and the medical-common dependency (still v0.6.9) follow it.
+- `url` 2.5.9, for RUSTSEC-2026-0592 (a stack overflow in `Url::origin()`).
