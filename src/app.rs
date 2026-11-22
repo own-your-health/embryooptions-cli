@@ -166,7 +166,7 @@ pub fn run(cli: &Cli) -> Result<i32, CliError> {
             signed_in()?;
             let batch = readers::download(args)?;
             if cli.common.json {
-                output::json(&serde_json::to_value(&batch).unwrap_or_default());
+                output::json(&to_json(&batch)?);
             } else {
                 note(
                     cli,
@@ -229,6 +229,11 @@ pub fn info() -> CliInfo {
         ],
     )
     .with_profiles(PROFILES)
+}
+
+/// A document as JSON, or the error a machine reader can tell from one.
+fn to_json(v: &impl Serialize) -> Result<serde_json::Value, CliError> {
+    serde_json::to_value(v).map_err(|e| CliError::Other(format!("serializing: {e}")))
 }
 
 /// One signed-in command's read: the profile's session, then `f`.
@@ -311,15 +316,16 @@ pub fn export(cli: &Cli, env: &Env, profile: &ProfileName, args: &ExportArgs) ->
                 "-o writes records to a plain file, which is for tests against a local server only".into(),
             )
             .with_remedy(format!(
-                "import real records with medrec, which runs this export itself: `medrec --profile <FOLDER> \
-                 import --from {BIN} --from-profile {profile} --patient <ID>` (`{BIN} patients list` shows the id)"
+                "`--ndjson` writes the stream to stdout; import real records with medrec, which runs that itself: \
+                 `medrec --profile <FOLDER> import --from {BIN} --from-profile {profile} --patient <ID>` \
+                 (`{BIN} patients list` shows the id)"
             )));
         }
         let site = Site::open(env, profile)?;
         let (path, finished) = export_to_dir(dir, &site, &env.base, patient, org, since)?;
         let summary = RecordsExport::new(path.display().to_string(), &finished);
         if cli.common.json {
-            output::json(&serde_json::to_value(&summary).unwrap_or_default());
+            output::json(&to_json(&summary)?);
         } else {
             note(
                 cli,

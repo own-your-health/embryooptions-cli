@@ -206,6 +206,8 @@ pub enum AccountsCmd {
 #[derive(Subcommand, Debug)]
 pub enum BillsCmd {
     /// One row per bill, newest service first, open and paid (bill-list/v1).
+    /// --since and --until filter on the date of service (a storage fee's
+    /// billing period's start, `date`), not on the day it was posted.
     #[command(visible_alias = "ls")]
     List(BillsListArgs),
     /// One bill with all the billing history says of it (bill/v1).
@@ -230,7 +232,8 @@ pub struct BillShowArgs {
 #[derive(Subcommand, Debug)]
 pub enum PaymentsCmd {
     /// Payments, refunds, discounts and credits, newest first, with whether
-    /// each settled (payment-list/v1).
+    /// each settled (payment-list/v1). --since and --until filter on the day
+    /// each was posted.
     #[command(visible_alias = "ls")]
     List(PaymentsListArgs),
 }
@@ -257,9 +260,9 @@ pub struct ExportArgs {
     /// A sign-in reads one clinic, so it may be omitted.
     #[arg(long, value_name = "ORG")]
     pub org: Option<String>,
-    /// Only bills with a service on or after this day, and payments dated
-    /// on or after it (YYYY-MM-DD). The organization, the patient and the
-    /// account are always included.
+    /// The day of the last pull (YYYY-MM-DD), for the stream's header. The
+    /// member API takes no date, so every bill and payment is still written,
+    /// and the header names every type unbounded.
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub since: Option<String>,
     /// Write the stream to stdout, which `medrec import --from

@@ -249,7 +249,7 @@ answers, in this order, before it prints or writes anything:
 
 | Command | Reads | Fields used |
 |---|---|---|
-| every reader | `MemberAccount/Member?ivfCenterId={ivfCenterId}`, `MemberIvfCenter`, then `MemberAccount/MemberPaymentHistoryAll?pageNumber=<n>&pageSize=50` from page 1 | the account's `id`, `billingBalance`, `adminFeeBalance`, `ivfCenterName`; the clinic's `name` and `merchantAccountDetails.currencyCode`; every history row as above |
+| every reader | `MemberAccount/Member?ivfCenterId={ivfCenterId}`, `MemberIvfCenter`, then `MemberAccount/MemberPaymentHistoryAll?pageNumber=<n>&pageSize=50` from page 1 | the account's `id`, `billingBalance`, `adminFeeBalance`, `ivfCenterName`; the clinic's `name` and `merchantAccountDetails.currencyCode`; every history row as above. A `MemberIvfCenter` that fails (but for a sign-in that has ended, exit 3) is a warning and no clinic answer: the account names the clinic, and `records export`, which needs the currency, is exit 5 |
 | `patients list` | as above | the clinic's subdomain and, hashed with the profile, the token's member id: the patient id. The member id never shows |
 | `accounts list` | as above, then `Member/UpComingBills` for a `CRY` member | the account; how many charges and payments, the open charges and what they owe; the upcoming bill |
 | `bills list [--open] [--since] [--until] [--limit]` | as above | the charges: `id`, the billing period (else the day of `timestamp`), `timestamp`, `memberPaymentTypeId`, the fee's name (else the note, else the type), the freeze date, `amount`, `outstandingBalance` |
@@ -269,8 +269,10 @@ How the answers are read (`src/reads.rs`):
   bare list is read as every row at once.
 - A row is a payment, a refund, a discount, a credit or another row by its
   `memberPaymentTypeId`, in any case, from the app's list above. A row of
-  any other type is a charge: a fee billed. A row with no type is another
-  row.
+  any other type, or of none, is a charge, a fee billed, when it names its
+  fee (`recurringFeeName` or `oneTimeFeeName`). One that names no fee is of
+  a type not known: neither a bill nor a payment, a warning naming its type
+  on every reader, and an `Invoice` skip in `records export`.
 - An amount is a JSON number of at most two decimals. A string, an
   exponent or a third decimal is exit 5 naming the field
   (`MemberPaymentHistoryAll.data.amount`), never with its value. Payments,
@@ -281,9 +283,9 @@ How the answers are read (`src/reads.rs`):
 - A charge's date of service is its billing period's start, else the day it
   was posted (`timestamp`); its period's end is the period's.
 - `outstandingBalance` is read as what is still owed on a charge: above 0
-  is an open bill (`bills list --open`). `records export` warns when the
-  open charges' outstanding balances do not add up to the account's
-  `billingBalance`.
+  is an open bill (`bills list --open`). When the open charges'
+  outstanding balances do not add up to the account's `billingBalance`,
+  `accounts list` and `bills list` warn and `records export` is exit 5.
 - A charge is voided when its `transactionStatus` says void or cancel.
 - A payment settled unless its card was turned down (`DEC`, `EXP`, `INV`,
   `ERR`) or its `transactionStatus` says it was declined, failed,
@@ -302,8 +304,9 @@ Each of these is the reading of the JavaScript alone, to check against the
 first signed-in answers:
 
 - the words `memberPaymentTypeId` takes for a charge (a storage fee, a
-  notice fee, an admin fee), and that every other word is in the app's
-  list;
+  notice fee, an admin fee), that every charge names its fee, and that
+  every other word is in the app's list (a row of a word outside it that
+  names no fee draws a warning naming the word);
 - whether `amount` and `billingBalance` are in dollars, as decimals, and
   the sign of a payment's `amount`;
 - whether `outstandingBalance` on a charge is what is owed on that charge

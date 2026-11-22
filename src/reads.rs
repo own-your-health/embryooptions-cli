@@ -13,8 +13,9 @@
 //! - A missing or `null` field is `None`.
 //! - The billing history is one list of every row the member's account
 //!   has: charges, payments, refunds, discounts and credits, told apart by
-//!   `memberPaymentTypeId` ([`kind_of`]). Payments, refunds, discounts and
-//!   credits are read as positive amounts, whatever their sign.
+//!   `memberPaymentTypeId` and the fee's name ([`kind_of`]). Payments,
+//!   refunds, discounts and credits are read as positive amounts, whatever
+//!   their sign.
 
 use pk_cli_core::CliError;
 use serde_json::Value;
@@ -49,7 +50,7 @@ pub struct ClinicInfo {
 /// What a billing-history row is, by its `memberPaymentTypeId`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
-    /// A fee billed to the member: every type the app names no other way.
+    /// A fee billed to the member: a row that names its fee.
     Charge,
     /// Money paid to the clinic, by the member or collected for it.
     Payment,
@@ -59,9 +60,13 @@ pub enum Kind {
     Discount,
     /// A credit to the account.
     Credit,
-    /// A row that moves no money: a dispute opened, a balance carried
-    /// forward, or a row with no type.
+    /// A row the app's list names that moves no money: a dispute opened,
+    /// a balance carried forward.
     Other,
+    /// A row of a type the app's list does not name that names no fee:
+    /// it may be a fee, a payment or a write-off, so it is neither a bill
+    /// nor a payment here.
+    Unknown,
 }
 
 impl Kind {
@@ -73,6 +78,7 @@ impl Kind {
             Kind::Discount => "discount",
             Kind::Credit => "credit",
             Kind::Other => "other",
+            Kind::Unknown => "unknown",
         }
     }
 }
@@ -105,14 +111,15 @@ const OTHERS: &[&str] = &[
     "Through",
 ];
 
-/// The kind of a row of type `type_id`, in any case. The bundle names
-/// every type that is not a charge, and none that is: a type outside its
-/// list is a fee billed (docs/api.md).
-pub fn kind_of(type_id: Option<&str>) -> Kind {
-    let Some(t) = type_id.map(str::trim).filter(|t| !t.is_empty()) else {
-        return Kind::Other;
-    };
-    let is = |list: &[&str]| list.iter().any(|x| x.eq_ignore_ascii_case(t));
+/// The kind of a row of type `type_id`, in any case, that names a fee
+/// (`recurringFeeName` or `oneTimeFeeName`) or not. The bundle names every
+/// type that is not a charge, and none that is, so a charge is a row of
+/// another type that names its fee. A row of another type that names none
+/// is [`Kind::Unknown`]: a type the provider adds later (a reversal, a
+/// write-off) is never taken for a bill (docs/api.md).
+pub fn kind_of(type_id: Option<&str>, names_a_fee: bool) -> Kind {
+    let t = type_id.map(str::trim).unwrap_or("");
+    let is = |list: &[&str]| !t.is_empty() && list.iter().any(|x| x.eq_ignore_ascii_case(t));
     if is(PAYMENTS) {
         Kind::Payment
     } else if is(REFUNDS) {
@@ -123,9 +130,16 @@ pub fn kind_of(type_id: Option<&str>) -> Kind {
         Kind::Credit
     } else if is(OTHERS) {
         Kind::Other
-    } else {
+    } else if names_a_fee {
         Kind::Charge
+    } else {
+        Kind::Unknown
     }
+}
+
+/// The fee a row names: `recurringFeeName`, else `oneTimeFeeName`.
+fn fee(r: &Value) -> Option<String> {
+    text(r, "recurringFeeName").or_else(|| text(r, "oneTimeFeeName"))
 }
 
 /// One row of the billing history (`MemberPaymentHistoryAll`'s `data[]`).
@@ -355,12 +369,13 @@ fn method(r: &Value) -> Option<String> {
 fn row(r: &Value) -> Result<Option<Row>, CliError> {
     let at = "MemberPaymentHistoryAll.data";
     let type_id = text(r, "memberPaymentTypeId");
-    let kind = kind_of(type_id.as_deref());
+    let fee = fee(r);
+    let kind = kind_of(type_id.as_deref(), fee.is_some());
     let Some(id) = text(r, "id") else {
         return Ok(None);
     };
     let amount = match kind {
-        Kind::Charge | Kind::Other => money(r, "amount", at)?,
+        Kind::Charge | Kind::Other | Kind::Unknown => money(r, "amount", at)?,
         _ => positive(r, "amount", at)?,
     };
     let codes = ["cptcode1", "cptcode2", "cptcode3"]
@@ -377,7 +392,7 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
         outstanding: money(r, "outstandingBalance", at)?,
         period_start: day(r, "billingCycleStartDate"),
         period_end: day(r, "billingCycleEndDate"),
-        fee: text(r, "recurringFeeName").or_else(|| text(r, "oneTimeFeeName")),
+        fee,
         discount_type: text(r, "discountTypeName"),
         allocated_discount: money(r, "allocationDiscountAmount", at)?,
         note: text(r, "billingNote"),
@@ -413,7 +428,7 @@ pub fn history_page(v: &Value) -> Result<Page, CliError> {
     for r in list {
         match row(r)? {
             Some(row) => rows.push(row),
-            None => unidentified.push(kind_of(text(r, "memberPaymentTypeId").as_deref())),
+            None => unidentified.push(kind_of(text(r, "memberPaymentTypeId").as_deref(), fee(r).is_some())),
         }
     }
     Ok(Page {
@@ -568,20 +583,24 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_told_apart_by_their_type() {
-        for (t, k) in [
-            (Some("MemberInitiatedPayment"), Kind::Payment),
-            (Some("automatedpayment"), Kind::Payment),
-            (Some("DirectPaymentToCenterByCheck"), Kind::Payment),
-            (Some("RefundViaCheck"), Kind::Refund),
-            (Some("FlatDiscount"), Kind::Discount),
-            (Some("Credit"), Kind::Credit),
-            (Some("BalanceForward"), Kind::Other),
-            (Some(" "), Kind::Other),
-            (None, Kind::Other),
-            (Some("AnnualStorageFee"), Kind::Charge),
+    fn rows_are_told_apart_by_their_type_and_a_charge_by_its_fee() {
+        for (t, fee, k) in [
+            (Some("MemberInitiatedPayment"), false, Kind::Payment),
+            (Some("automatedpayment"), true, Kind::Payment),
+            (Some("DirectPaymentToCenterByCheck"), false, Kind::Payment),
+            (Some("RefundViaCheck"), false, Kind::Refund),
+            (Some("FlatDiscount"), true, Kind::Discount),
+            (Some("Credit"), false, Kind::Credit),
+            (Some("BalanceForward"), false, Kind::Other),
+            (Some("AnnualStorageFee"), true, Kind::Charge),
+            (None, true, Kind::Charge),
+            // A type the app's list does not name, with no fee: not a bill.
+            (Some("AnnualStorageFee"), false, Kind::Unknown),
+            (Some("WriteOff"), false, Kind::Unknown),
+            (Some(" "), false, Kind::Unknown),
+            (None, false, Kind::Unknown),
         ] {
-            assert_eq!(kind_of(t), k, "{t:?}");
+            assert_eq!(kind_of(t, fee), k, "{t:?} {fee}");
         }
     }
 
@@ -649,8 +668,10 @@ mod tests {
 
     #[test]
     fn a_history_page_is_data_and_total_or_a_bare_list() {
-        let p = history_page(&json!({"data": [{"id": 1, "memberPaymentTypeId": "Fee", "amount": 10},
-            {"memberPaymentTypeId": "AutomatedPayment"}], "total": 3}))
+        let p = history_page(
+            &json!({"data": [{"id": 1, "memberPaymentTypeId": "Fee", "oneTimeFeeName": "Fee", "amount": 10},
+            {"memberPaymentTypeId": "AutomatedPayment"}], "total": 3}),
+        )
         .unwrap();
         assert_eq!(
             (p.rows.len(), p.unidentified.clone(), p.len, p.total, p.unpaged),

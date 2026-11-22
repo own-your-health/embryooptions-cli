@@ -1143,8 +1143,11 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
     assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
 }
 
+/// The member API takes no date, so `--since` drops nothing: the header
+/// names every type unbounded (DESIGN §1). An annual fee whose period
+/// began before `since` and was paid after it still arrives `balanced`.
 #[test]
-fn records_export_since_keeps_the_account_and_later_bills() {
+fn records_export_since_drops_nothing_and_says_so() {
     let server = serve(reader_routes());
     let env = reader_env(&server, "since");
     let site = Site::open(&env, &adult1()).unwrap();
@@ -1154,15 +1157,15 @@ fn records_export_since_keeps_the_account_and_later_bills() {
     assert_eq!(lines[0]["since"], "2025-06-01");
     assert_eq!(
         lines[0]["since_unbounded"],
-        json!(["Organization", "Patient", "Account"])
+        json!(["Organization", "Patient", "Account", "Invoice", "PaymentReconciliation"])
     );
-    let invoices: Vec<&str> = of_type(&lines, "Invoice")
-        .iter()
-        .map(|i| i["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(invoices, ["bill-1001-501"]);
-    assert_eq!(of_type(&lines, "Account").len(), 1);
-    assert!(of_type(&lines, "PaymentReconciliation").is_empty());
+    let mut whole = Vec::new();
+    readers::export(&site, &server.base, &mut whole, None, None, None).unwrap();
+    let resources = |l: &[serde_json::Value]| l[1..l.len() - 1].to_vec();
+    let whole = stream_of(&whole);
+    assert_eq!(resources(&lines).len(), resources(&whole).len());
+    assert_eq!(of_type(&lines, "Invoice").len(), 3);
+    assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 1);
 }
 
 #[test]
@@ -1290,8 +1293,11 @@ fn a_clinic_billing_in_another_currency_lists_but_does_not_export() {
     assert!(out.is_empty());
 }
 
+/// Open bills that do not add up to the account's balance: the listings
+/// warn, and the export writes nothing, since a store would sum the open
+/// Invoices into a wrong balance.
 #[test]
-fn a_balance_the_open_bills_do_not_add_to_is_a_warning() {
+fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
     let server = serve(with(
         reader_routes(),
         MEMBER_AT,
@@ -1303,6 +1309,108 @@ fn a_balance_the_open_bills_do_not_add_to_is_a_warning() {
     ));
     let env = reader_env(&server, "balance");
     let site = Site::open(&env, &adult1()).unwrap();
+    readers::accounts_list(&site).unwrap();
+    readers::bills_list(&site, true, &RangeArgs::default()).unwrap();
+    let warnings = env.warnings.lines();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| w.contains("add to 600.00") && w.contains("650.00 owed"))
+            .count(),
+        2,
+        "{warnings:?}"
+    );
+    let mut out = Vec::new();
+    let e = readers::export(&site, &server.base, &mut out, None, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(e.to_string().contains("writes no stream"), "{e}");
+    assert!(out.is_empty());
+}
+
+/// The clinic's answer gives only its name and currency: a failure is a
+/// warning for the listings, which name the clinic from the account, and
+/// stops the export, which needs the currency. A sign-in that has ended is
+/// exit 3 for all.
+#[test]
+fn a_clinic_not_read_is_a_warning_for_the_listings_and_stops_the_export() {
+    let mut down = reader_routes();
+    down.insert(
+        CLINIC_AT.into(),
+        (404, "application/json", r#"{"message":"not found"}"#.into()),
+    );
+    let no_currency = with(
+        reader_routes(),
+        CLINIC_AT,
+        r#"{"id": 7, "name": "Example Fertility Clinic", "currencySymbol": "$"}"#,
+    );
+    for (tag, routes, warned) in [("clinic-down", down, true), ("clinic-no-currency", no_currency, false)] {
+        let server = serve(routes);
+        let env = reader_env(&server, tag);
+        let site = Site::open(&env, &adult1()).unwrap();
+        let v = readers::accounts_list(&site).unwrap();
+        assert_eq!(v["items"][0]["provider"], "Example Fertility Clinic", "{tag}");
+        assert!(v["items"][0]["currency"].is_null(), "{tag}");
+        assert_eq!(
+            env.warnings
+                .lines()
+                .iter()
+                .any(|w| w.contains("the clinic was not read")),
+            warned,
+            "{tag}: {:?}",
+            env.warnings.lines()
+        );
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 5, "{tag}");
+        assert!(e.to_string().contains("currency was not read"), "{tag}: {e}");
+        assert!(out.is_empty());
+    }
+    let mut refused = reader_routes();
+    refused.insert(CLINIC_AT.into(), (401, "application/json", String::new()));
+    let server = serve(refused);
+    let env = reader_env(&server, "clinic-refused");
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert_eq!(
+        readers::bills_list(&site, false, &RangeArgs::default())
+            .err()
+            .unwrap()
+            .exit_code(),
+        3
+    );
+}
+
+/// A type the app's list does not name, with no fee: neither a bill nor a
+/// payment, a warning naming the type, and an Invoice skip, so a store
+/// infers no dropped bill from a stream that may lack one.
+#[test]
+fn a_row_of_an_unknown_type_naming_no_fee_is_no_bill_and_an_invoice_skip() {
+    let page = edited(
+        HISTORY_2,
+        r#""memberPaymentTypeId": "MemberDisputedChargeResolutionProcessInitiated""#,
+        r#""memberPaymentTypeId": "WriteOff""#,
+    );
+    let server = serve(with(reader_routes(), &page_at(2), &page));
+    let env = reader_env(&server, "unknown");
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert_eq!(
+        ids(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap()),
+        ["501", "503", "506"]
+    );
+    assert_eq!(
+        ids(&readers::payments_list(&site, &RangeArgs::default()).unwrap()),
+        ["504", "502", "505"]
+    );
+    let warnings = env.warnings.lines();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("1 billing-history row(s) of a type") && w.contains("(WriteOff)")),
+        "{warnings:?}"
+    );
     let mut out = Vec::new();
     assert!(
         readers::export(&site, &server.base, &mut out, None, None, None)
@@ -1310,13 +1418,16 @@ fn a_balance_the_open_bills_do_not_add_to_is_a_warning() {
             .trailer
             .complete
     );
-    let warnings = env.warnings.lines();
+    let lines = stream_of(&out);
+    let skipped = lines.last().unwrap()["skipped"].as_array().unwrap().clone();
+    let invoice_skips: Vec<&serde_json::Value> = skipped.iter().filter(|s| s["resource_type"] == "Invoice").collect();
+    assert_eq!(invoice_skips.len(), 1, "{skipped:?}");
+    assert_eq!(invoice_skips[0]["code"], "unsupported");
     assert!(
-        warnings
-            .iter()
-            .any(|w| w.contains("add to 600.00") && w.contains("650.00 owed")),
-        "{warnings:?}"
+        !lines.last().unwrap().to_string().contains("WriteOff"),
+        "the type stays out of the stream"
     );
+    assert_eq!(of_type(&lines, "Invoice").len(), 3);
 }
 
 #[test]

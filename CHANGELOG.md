@@ -16,9 +16,13 @@
 - `records export` writes no skip of an `Invoice` but for a charge it could
   not read, so a records store can tell a bill the site no longer lists;
   refunds, discounts, credits and rows that move no money are counted in
-  skips of their own. A clinic billing in a currency other than USD is
-  exit 5, and the export warns when the open bills do not add up to the
-  account's balance.
+  skips of their own. A charge is a row that names its fee; a row of a type
+  the app does not list that names none is no bill, an `Invoice` skip and
+  a warning naming its type. A clinic billing in a currency other than USD,
+  or whose currency was not read, is exit 5, and so are open bills that do
+  not add up to the account's balance (`accounts list` and `bills list`
+  warn). The member API takes no date, so `--since` drops nothing and the
+  header names every type unbounded.
 - `documents list|download`: Embryo Options serves no statement or receipt
   files, so the list is empty and an id is exit 4.
 - medical-common v0.6.11 and cli-common v0.33.5: the bill's code systems,

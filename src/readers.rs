@@ -14,6 +14,8 @@
 //! member's account, the clinic, and the billing history, every page of
 //! it. The history is one list of charges, payments, refunds, discounts
 //! and credits (`reads::Kind`): a charge is a bill, a payment a payment.
+//! A row of a type the app's list does not name, that names no fee, is
+//! neither, with a warning naming its type.
 
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -97,8 +99,8 @@ fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
         let page = reads::history_page(&site.read(&history_page_path(n))?)?;
         total = total.or(page.total);
         received += page.len;
-        let fresh_unidentified = page.unidentified.len();
         unidentified.extend(page.unidentified);
+        let with_ids = page.rows.len();
         let mut fresh = 0;
         for r in page.rows {
             if ids.insert(r.id.clone()) {
@@ -110,7 +112,7 @@ fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
         }
         // A server that ignores `pageNumber` answers the same rows again:
         // reading on would only repeat them, up to the cap.
-        if n > 1 && page.len > 0 && fresh + fresh_unidentified == 0 {
+        if n > 1 && with_ids > 0 && fresh == 0 {
             return Err(CliError::Upstream(format!(
                 "Embryo Options's billing history answered page {n} with the rows of the pages before it"
             ))
@@ -138,12 +140,45 @@ fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
     )))
 }
 
+/// The clinic's answer. Only its name and currency are read from it, and
+/// the account names the clinic too, so a failure is a warning and no
+/// answer, but for a sign-in that has ended. `records export`, which needs
+/// the currency, refuses a clinic not read ([`check_currency`]).
+fn clinic(site: &Site) -> Result<ClinicInfo, CliError> {
+    match site.read(CLINIC_PATH) {
+        Ok(v) => Ok(reads::clinic(&v)),
+        Err(e) if e.exit_code() == 3 => Err(e),
+        Err(e) => {
+            site.warn(format!("the clinic was not read: {}", e.message()));
+            Ok(ClinicInfo::default())
+        }
+    }
+}
+
+/// A warning naming the types of the rows that are neither bills nor
+/// payments here, so the first read of a real account shows what to map.
+fn warn_unknown(site: &Site, rows: &[Row], unidentified: &[Kind]) {
+    let unknown: Vec<&Row> = rows.iter().filter(|r| r.kind == Kind::Unknown).collect();
+    let n = unknown.len() + unidentified.iter().filter(|k| **k == Kind::Unknown).count();
+    if n == 0 {
+        return;
+    }
+    let types: BTreeSet<&str> = unknown.iter().map(|r| r.type_id.as_deref().unwrap_or("none")).collect();
+    let types: Vec<&str> = types.into_iter().collect();
+    site.warn(format!(
+        "{n} billing-history row(s) of a type {BIN} does not know, naming no fee ({}), are neither bills nor \
+         payments here; `{BIN} api GET {HISTORY_PATH}` shows them",
+        types.join(", ")
+    ));
+}
+
 /// The member's account, the clinic and the billing history, with the ids
 /// the resources carry.
 pub fn book(site: &Site) -> Result<Book, CliError> {
     let member = reads::member(&site.read(MEMBER_PATH)?)?;
-    let clinic = reads::clinic(&site.read(CLINIC_PATH)?);
+    let clinic = clinic(site)?;
     let (rows, unidentified) = history(site)?;
+    warn_unknown(site, &rows, &unidentified);
     let slug = site.clinic().slug().to_string();
     let organization_name = clinic
         .name
@@ -182,6 +217,20 @@ impl Book {
         self.rows.iter().filter(move |r| r.kind == kind)
     }
 
+    /// When the open bills' outstanding balances do not add up to what the
+    /// account shows owed, what each says: the sign that
+    /// `outstandingBalance` is not what is owed on each bill.
+    pub fn balance_mismatch(&self) -> Option<String> {
+        let (owed, balance) = (self.owed_on_bills()?, self.member.balance?);
+        (owed != balance).then(|| {
+            format!(
+                "the open bills' outstanding balances add to {}, and the account shows {} owed",
+                owed.decimal(),
+                balance.decimal()
+            )
+        })
+    }
+
     /// What the open bills say is owed, when any says.
     pub fn owed_on_bills(&self) -> Option<Cents> {
         let owed: Vec<i64> = self
@@ -207,6 +256,17 @@ impl Book {
             name: None,
             session: None,
         }
+    }
+}
+
+/// `accounts list` and `bills list` show the two figures; a warning says
+/// they differ.
+fn warn_mismatch(site: &Site, book: &Book) {
+    if let Some(m) = book.balance_mismatch() {
+        site.warn(format!(
+            "{m}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
+             seen to confirm"
+        ));
     }
 }
 
@@ -284,6 +344,7 @@ fn next_bill(site: &Site) -> Result<Value, CliError> {
 /// `accounts list` (account-list/v1): the sign-in's one account.
 pub fn accounts_list(site: &Site) -> Result<Value, CliError> {
     let book = book(site)?;
+    warn_mismatch(site, &book);
     let next = next_bill(site)?;
     let m = &book.member;
     let row = json!({
@@ -325,6 +386,7 @@ fn bill_row(book: &Book, r: &Row) -> Value {
 pub fn bills_list(site: &Site, open: bool, range: &RangeArgs) -> Result<Value, CliError> {
     let range = &padded(range)?;
     let book = book(site)?;
+    warn_mismatch(site, &book);
     let mut rows: Vec<&Row> = book
         .of(Kind::Charge)
         .filter(|r| !open || r.is_open())
@@ -457,7 +519,11 @@ pub fn header(book: &Book, origin: &str, since: Option<&str>) -> Header {
     h.method = Some(method::PORTAL.into());
     if let Some(s) = since {
         h.since = Some(s.into());
-        h.since_unbounded = vec!["Organization".into(), "Patient".into(), "Account".into()];
+        // The member API takes no date: every type is read whole, and none
+        // is dropped (DESIGN §1, `--since`).
+        h.since_unbounded = ["Organization", "Patient", "Account", "Invoice", "PaymentReconciliation"]
+            .map(String::from)
+            .to_vec();
     }
     h
 }
@@ -485,10 +551,17 @@ fn check_ids(book: &Book, patient: Option<&str>, org: Option<&str>) -> Result<()
 }
 
 /// The amounts are written in USD (DESIGN §1.10): a clinic that bills in
-/// another currency is exit 5, before the stream starts.
+/// another currency, or whose currency was not read, is exit 5, before the
+/// stream starts.
 fn check_currency(book: &Book) -> Result<(), CliError> {
     match book.clinic.currency.as_deref() {
-        None | Some("USD") => Ok(()),
+        Some("USD") => Ok(()),
+        None => Err(CliError::Upstream(
+            "the clinic's currency was not read (`MemberIvfCenter`'s `merchantAccountDetails.currencyCode`), \
+             and the records stream carries US dollars only"
+                .into(),
+        )
+        .with_remedy(format!("`{BIN} api GET {CLINIC_PATH}` shows the clinic's answer"))),
         Some(other) => Err(CliError::Upstream(format!(
             "the clinic bills in {other}, and the records stream carries US dollars only"
         ))
@@ -509,7 +582,14 @@ fn skip_count<W: Write>(w: &mut RecordsWriter<W>, n: usize, code: &str, reason: 
 /// `records export`: the stream on `out`. Every answer is read before the
 /// header, so a refused session, an unreadable answer or a history read
 /// short is an ordinary error and nothing reaches `out`. A charge without a
-/// date or an amount is a skip for its Invoice (DESIGN §1.10).
+/// date or an amount is a skip for its Invoice (DESIGN §1.10), and so are
+/// the rows of a type not known ([`reads::Kind::Unknown`]), so a store
+/// infers nothing from a stream that may lack a bill.
+///
+/// Open bills that do not add up to the account's balance are exit 5
+/// before the stream: a store sums the open Invoices into the balance, and
+/// would keep a wrong one. `--since` is in the header only: the member API
+/// takes no date, so every bill and payment is written (DESIGN §1).
 pub fn export<W: Write>(
     site: &Site,
     origin: &str,
@@ -523,15 +603,14 @@ pub fn export<W: Write>(
     let book = book(site)?;
     check_ids(&book, patient, org)?;
     check_currency(&book)?;
-    if let (Some(owed), Some(balance)) = (book.owed_on_bills(), book.member.balance) {
-        if owed != balance {
-            site.warn(format!(
-                "the bills' outstanding balances add to {}, and the account shows {} owed: {BIN} reads \
-                 `outstandingBalance` as what is owed on each bill, which the API has not yet been seen to confirm",
-                owed.decimal(),
-                balance.decimal()
-            ));
-        }
+    if let Some(m) = book.balance_mismatch() {
+        return Err(CliError::Upstream(format!(
+            "{m}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
+             seen to confirm, and writes no stream whose bills would give the wrong balance"
+        ))
+        .with_remedy(format!(
+            "`{BIN} accounts list` and `{BIN} bills list --open` show both figures"
+        )));
     }
     let now = now_rfc3339();
     let mut w = RecordsWriter::start(out, &header(&book, origin, since))?;
@@ -565,9 +644,6 @@ pub fn export<W: Write>(
                 ));
                 continue;
             };
-            if since.is_some_and(|s| model.service_start.as_str() < s) {
-                continue;
-            }
             w.resource(&RawResource::from_value(&m.bill(&model, &now))?)?;
         }
         let unplaced = book.unidentified.iter().filter(|k| **k == Kind::Charge).count();
@@ -577,6 +653,16 @@ pub fn export<W: Write>(
                 "",
                 "unreadable",
                 format!("{unplaced} bill(s) came without an id"),
+            ));
+        }
+        let unknown =
+            book.of(Kind::Unknown).count() + book.unidentified.iter().filter(|k| **k == Kind::Unknown).count();
+        if unknown > 0 {
+            w.skip(Skip::resource(
+                "Invoice",
+                "",
+                skip::UNSUPPORTED,
+                format!("{unknown} row(s) of the billing history of a type the bill mapping does not know, naming no fee, may be bills"),
             ));
         }
         let (mut unsettled, mut undated) = (0, 0);
@@ -591,9 +677,6 @@ pub fn export<W: Write>(
                 undated += 1;
                 continue;
             };
-            if since.is_some_and(|s| model.date.as_str() < s) {
-                continue;
-            }
             w.resource(&RawResource::from_value(&m.payment(&model, 0, |_| false))?)?;
         }
         undated += book.unidentified.iter().filter(|k| **k == Kind::Payment).count();
@@ -615,7 +698,7 @@ pub fn export<W: Write>(
             (Kind::Credit, "credit(s)"),
             (
                 Kind::Other,
-                "row(s) of the billing history that move no money (a dispute opened, a balance carried forward) or name no type",
+                "row(s) of the billing history that move no money (a dispute opened, a balance carried forward)",
             ),
         ] {
             let n = book.of(k).count() + book.unidentified.iter().filter(|u| **u == k).count();
@@ -623,7 +706,9 @@ pub fn export<W: Write>(
                 &mut w,
                 n,
                 skip::UNSUPPORTED,
-                format!("{n} {what} have no resource in the bill mapping; `{BIN} payments list` and `{BIN} api` show them"),
+                format!(
+                    "{n} {what} have no resource in the bill mapping; `{BIN} payments list` and `{BIN} api` show them"
+                ),
             );
         }
         Ok(())

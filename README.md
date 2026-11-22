@@ -115,7 +115,7 @@ command that signs in again:
 | `auth login --browser\|--stdin`, `auth status\|logout\|reset` | `auth-login/v1`, `auth-status/v1`, … |
 | `patients list` | `patient-list/v1`: the member the sign-in is, with the id `records export --patient` takes |
 | `accounts list` | `account-list/v1`: the account, what is owed, the bills open and the next bill |
-| `bills list [--open] [--since] [--until] [--limit]` | `bill-list/v1`: the fees billed, newest first, with what is owed on each |
+| `bills list [--open] [--since] [--until] [--limit]` | `bill-list/v1`: the fees billed, newest service first, with what is owed on each; `--since` and `--until` filter on the date of service |
 | `bills show <ID>` | `bill/v1`: one fee with its period, freeze date, provider, lab and CPT codes |
 | `payments list [--since] [--until] [--limit]` | `payment-list/v1`: payments, refunds, discounts and credits, with whether each settled |
 | `records export --ndjson [--since] [--patient] [--org]` | `records-stream/v1`: the account, its bills and settled payments as FHIR (`docs/fhir.md`) |

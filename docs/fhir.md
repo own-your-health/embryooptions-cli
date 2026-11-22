@@ -48,6 +48,12 @@ refused session, an answer it cannot read, or a billing history whose
 pages hold fewer rows than its `total`, is the command's error and
 nothing is written.
 
+The member API takes no date, so `--since` bounds nothing: every bill and
+payment the history holds is written, and the header's `since_unbounded`
+names every type (`Organization`, `Patient`, `Account`, `Invoice`,
+`PaymentReconciliation`), per DESIGN §1. A bill whose service began
+before `since` and was paid after it still arrives `balanced`.
+
 | The API shows | In the stream |
 |---|---|
 | The clinic | `Organization` `org-<clinic>` (the subdomain), named by `MemberIvfCenter`'s `name`, else the account's `ivfCenterName`, else the subdomain |
@@ -66,26 +72,38 @@ can still tell a bill the site no longer lists (DESIGN §1.10):
 | payments whose card the processor turned down, or whose status says failed, voided or returned | `not_settled` |
 | payments without an id, a date or an amount | `unreadable` |
 | refunds, discounts and credits: the bill mapping has no resource for them | `unsupported` |
-| rows that move no money (a dispute opened, a balance carried forward) or name no type | `unsupported` |
+| rows that move no money (a dispute opened, a balance carried forward) | `unsupported` |
 
 A charge without a date or an amount is a skip of its `Invoice`
 (`unreadable`), and so are charges without an id, in one skip: a bill
 that could not be read.
+
+A charge is a row that names its fee (`recurringFeeName` or
+`oneTimeFeeName`) and whose type is not in the app's list of payments,
+refunds, discounts, credits and other rows (`docs/api.md`). A row of a
+type outside that list that names no fee may be a bill, a reversal or a
+write-off: it is written as neither, counted in one skip of `Invoice`
+(`unsupported`), so a store infers no removed bill from the stream, and
+every reader warns on stderr naming its type.
 
 Not exported: the upcoming bill (`UpComingBills`), the service plans and
 next scheduled payments (`FreezeEvents`) and the payment method: they
 describe what will be billed or how, not a bill. `accounts list` shows the
 upcoming bill.
 
-A clinic whose `merchantAccountDetails.currencyCode` is not `USD` is exit
-5 before the stream: the profile's `Money` is US dollars only.
+A clinic whose `merchantAccountDetails.currencyCode` is not `USD`, or
+whose currency was not read (`MemberIvfCenter` failed or named none), is
+exit 5 before the stream: the profile's `Money` is US dollars only.
 `accounts list`, `bills list` and `payments list` show its amounts as it
-bills them, with the currency.
+bills them, with the currency, or with none and a warning when the clinic
+was not read.
 
-`records export` warns on stderr when the open charges'
-`outstandingBalance` does not add up to the account's `billingBalance`: a
-sign that `outstandingBalance` is not what is owed on each charge, which
-the API has not yet been seen to confirm.
+When the open charges' `outstandingBalance` does not add up to the
+account's `billingBalance`, `records export` is exit 5 before the stream,
+and `accounts list` and `bills list` warn on stderr. It is the sign that
+`outstandingBalance` is not what is owed on each charge, which the API has
+not yet been seen to confirm, and a store summing the open Invoices would
+keep a wrong balance.
 
 There are no `DocumentReference`s: Embryo Options serves no statement or
 receipt files (`docs/api.md`).
