@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- medical-common v0.6.11 and cli-common v0.33.5: the bill's code systems,
+  price components, document types, `Money` and totals come from
+  `pk_med_records::bill` (DESIGN §1.10) instead of the CLI's own copy. Two
+  displays change to the profile's: `insurance-adjustment` is "Insurance
+  adjustment" (was "Adjustment") and `patient-responsibility` is "Patient
+  responsibility" (was "Patient owes"). Codes, types, amounts and ids
+  are unchanged.
 - `embryooptions`: a member's storage bills from Embryo Options, read-only.
 - `profiles list|add|remove`; every command that reads the site takes
   `--profile`.
@@ -34,7 +41,7 @@
   <SLUG> --profile <NAME> --overwrite`.
 - The repository moved to own-your-health
   (github.com/own-your-health/embryooptions-cli); `self-update`, `cargo
-  install --git` and the medical-common dependency (still v0.6.9) follow it.
+  install --git` and the medical-common dependency follow it.
 - `url` 2.5.9, for RUSTSEC-2026-0592 (a stack overflow in `Url::origin()`).
 - The bill model (`src/bill.rs`, docs/fhir.md) follows medrec's bill
   mapping, as flywire's does: every `Money` value is a JSON number in the
