@@ -32,3 +32,6 @@
   a clock that is off or a token the API stopped taking early.
 - The sign-in remedies name the clinic: `auth login --browser --clinic
   <SLUG> --profile <NAME> --overwrite`.
+- The repository moved to own-your-health
+  (github.com/own-your-health/embryooptions-cli); `self-update`, `cargo
+  install --git` and the medical-common dependency (still v0.6.9) follow it.

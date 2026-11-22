@@ -13,7 +13,7 @@ use serde_json::json;
 use crate::cli::*;
 use crate::portal::{Env, Site};
 
-const REPO: &str = "piekstra/embryooptions-cli";
+const REPO: &str = "own-your-health/embryooptions-cli";
 pub const PROFILE_ENV: &str = "EMBRYOOPTIONS_PROFILE";
 
 #[derive(Debug, Default, Serialize, Deserialize)]
