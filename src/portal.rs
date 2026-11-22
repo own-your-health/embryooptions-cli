@@ -2,6 +2,7 @@
 //! these return; the tests run them in-process against a loopback server
 //! with the session in an in-memory vault ([`Env`]).
 
+use std::cell::{Cell, RefCell};
 use std::time::Duration;
 
 use pk_cli_config::profile::ProfileName;
@@ -18,10 +19,12 @@ pub struct Env {
     pub base: String,
     /// The least time between one answer and the next request.
     pub pace: Duration,
+    pub warnings: Warnings,
 }
 
 impl Env {
-    /// The binary's: the vault, the member API, [`client::PACE`] apart.
+    /// The binary's: the vault, the member API, [`client::PACE`] apart,
+    /// warnings on stderr.
     pub fn for_binary() -> Result<Env, CliError> {
         // The base first: a refused override reaches no vault.
         let base = client::base()?;
@@ -29,6 +32,7 @@ impl Env {
             sessions: SessionStore::open()?,
             base,
             pace: client::PACE,
+            warnings: Warnings::stderr(),
         })
     }
 
@@ -38,48 +42,67 @@ impl Env {
     }
 }
 
-/// A profile's signed-in reads.
-pub struct Site {
-    client: Client,
-    claims: Claims,
+/// Where a warning goes: stderr for the binary, a list for a test.
+pub struct Warnings(Option<RefCell<Vec<String>>>);
+
+impl Warnings {
+    pub fn stderr() -> Warnings {
+        Warnings(None)
+    }
+
+    /// Kept for [`lines`](Self::lines) instead of printed.
+    pub fn kept() -> Warnings {
+        Warnings(Some(RefCell::default()))
+    }
+
+    pub fn warn(&self, line: String) {
+        match &self.0 {
+            None => eprintln!("warning: {line}"),
+            Some(kept) => kept.borrow_mut().push(line),
+        }
+    }
+
+    /// The warnings kept so far.
+    pub fn lines(&self) -> Vec<String> {
+        self.0.as_ref().map(|k| k.borrow().clone()).unwrap_or_default()
+    }
 }
 
-impl Site {
+/// A profile's signed-in reads.
+pub struct Site<'e> {
+    env: &'e Env,
+    profile: ProfileName,
+    session: RefCell<Session>,
+    client: RefCell<Client>,
+    claims: Claims,
+    /// Whether a read's 403 has renewed the session already: once per
+    /// command.
+    renewed_after_refusal: Cell<bool>,
+}
+
+impl<'e> Site<'e> {
     /// The profile's stored session: none stored, or a token from the
     /// site's registration step, is exit 3 naming the sign-in, before any
     /// request.
     ///
     /// An access token that has expired, or expires within
-    /// [`REFRESH_MARGIN`] seconds, is renewed first under the session
-    /// store's lock ([`SessionStore::renew`]): the stored session is read
-    /// again, and unless another process renewed it or signed in meanwhile,
-    /// [`client::refresh`] asks for a new pair and it is stored. A pair that
-    /// cannot be stored is still read with, with a warning. A renewal that
-    /// fails for any reason but a refused refresh token (exit 3) leaves a
-    /// token that has not yet expired to be read with, with a warning.
-    pub fn open(env: &Env, profile: &ProfileName) -> Result<Site, CliError> {
+    /// [`REFRESH_MARGIN`] seconds by this machine's clock, is renewed first
+    /// ([`renew`]). A renewal that fails for any reason but a refused refresh
+    /// token (exit 3) leaves a token that has not yet expired to be read
+    /// with, with a warning.
+    pub fn open(env: &'e Env, profile: &ProfileName) -> Result<Site<'e>, CliError> {
         let mut session = env.sessions.load(profile)?;
         let mut renewed = false;
         if due(&session) {
-            let attempt = env.sessions.renew(profile, due, |latest| {
-                let tokens = client::refresh(&env.base, &latest, profile)?;
-                let fresh = latest.renewed(tokens);
-                renewed = true;
-                if let Err(e) = env.sessions.put(profile, &fresh) {
-                    eprintln!(
-                        "warning: profile `{profile}`'s renewed Embryo Options sign-in was not stored ({e}); this \
-                         command reads with it, and the next may need `{}`",
-                        client::login_remedy(profile, &latest.clinic)
-                    );
+            match renew(env, profile, due) {
+                Ok((latest, granted)) => {
+                    session = latest;
+                    renewed = granted;
                 }
-                Ok(fresh)
-            });
-            match attempt {
-                Ok(latest) => session = latest,
-                Err(e) if e.exit_code() != 3 && !expired(&session) => eprintln!(
-                    "warning: profile `{profile}`'s Embryo Options sign-in was not renewed ({e}); this command \
-                     reads with the current token, which expires within {REFRESH_MARGIN} s"
-                ),
+                Err(e) if e.exit_code() != 3 && !expired(&session) => env.warnings.warn(format!(
+                    "profile `{profile}`'s Embryo Options sign-in was not renewed ({e}); this command reads \
+                     with the current token, which expires within {REFRESH_MARGIN} s"
+                )),
                 Err(e) => return Err(e),
             }
         }
@@ -114,15 +137,81 @@ impl Site {
             .with_remedy(client::login_remedy(profile, &session.clinic)));
         }
         let client = Client::new(&session, profile, &env.base, env.pace)?;
-        Ok(Site { client, claims })
+        Ok(Site {
+            env,
+            profile: profile.clone(),
+            session: RefCell::new(session),
+            client: RefCell::new(client),
+            claims,
+            renewed_after_refusal: Cell::new(false),
+        })
     }
 
     /// `embryooptions api GET <path>`, the path already checked by
     /// [`client::api_path`] and resolved here for the token's member.
+    ///
+    /// A read the API answers 403 (its answer to an access token it no
+    /// longer takes, whatever this machine's clock says) renews the session
+    /// once per command, as the web app does, and is sent again with the
+    /// new token. The renewal is skipped when no refresh token is stored,
+    /// and sends nothing when another process has renewed meanwhile: its
+    /// pair is read with.
     pub fn api(&self, path: &ApiPath) -> Result<Answer, CliError> {
         let read = path.resolve(&self.claims)?;
-        self.client.api(&read)
+        let refused = match self.client.borrow().api(&read) {
+            Err(e) if e.reason() == Some(Reason::Forbidden) => e,
+            answer => return answer,
+        };
+        if self.renewed_after_refusal.replace(true) || self.session.borrow().refresh_token.is_none() {
+            return Err(refused);
+        }
+        let presented = self.session.borrow().access_token.expose().to_string();
+        self.client.borrow().pause();
+        let (latest, _) = renew(self.env, &self.profile, |stored| {
+            stored.refresh_token.is_some() && stored.access_token.expose() == presented
+        })?;
+        if latest.access_token.expose() == presented {
+            return Err(refused);
+        }
+        let member = latest.claims().ok().and_then(|c| c.member_id);
+        if member.is_none() || member != self.claims.member_id {
+            return Err(CliError::Auth(format!(
+                "profile `{}`'s renewed Embryo Options sign-in is not the same member's",
+                self.profile
+            ))
+            .because(Reason::CredentialRefused)
+            .with_remedy(client::login_remedy(&self.profile, &latest.clinic)));
+        }
+        let client = self.client.borrow().replaced(&latest)?;
+        *self.client.borrow_mut() = client;
+        *self.session.borrow_mut() = latest;
+        self.client.borrow().api(&read)
     }
+}
+
+/// One renewal of `profile`'s session under the session store's lock
+/// ([`SessionStore::renew`]): the stored session is read again and, if
+/// `due` still holds for it, [`client::refresh`] asks for a new pair, which
+/// is stored. Otherwise another process renewed or signed in meanwhile, and
+/// its session is the answer, with nothing sent. A new pair that cannot be
+/// stored is still the answer, with a warning: the refresh has already
+/// spent the old one. The flag says whether a pair was granted.
+fn renew(env: &Env, profile: &ProfileName, due: impl FnOnce(&Session) -> bool) -> Result<(Session, bool), CliError> {
+    let mut granted = false;
+    let session = env.sessions.renew(profile, due, |latest| {
+        let tokens = client::refresh(&env.base, &latest, profile)?;
+        let fresh = latest.renewed(tokens);
+        granted = true;
+        if let Err(e) = env.sessions.put(profile, &fresh) {
+            env.warnings.warn(format!(
+                "profile `{profile}`'s renewed Embryo Options sign-in was not stored ({e}); this command reads \
+                 with it, and the next may need `{}`",
+                client::login_remedy(profile, &latest.clinic)
+            ));
+        }
+        Ok(fresh)
+    })?;
+    Ok((session, granted))
 }
 
 /// How long before its expiry an access token is renewed, in seconds: a
@@ -137,7 +226,7 @@ fn due(session: &Session) -> bool {
             .claims()
             .ok()
             .and_then(|c| c.expires_at)
-            .is_some_and(|exp| exp - REFRESH_MARGIN <= now_unix())
+            .is_some_and(|exp| exp <= now_unix().saturating_add(REFRESH_MARGIN))
 }
 
 /// Whether `session`'s access token has expired ([`Claims::expired_at`]).

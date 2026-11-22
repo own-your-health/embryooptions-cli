@@ -41,7 +41,8 @@ Report a vulnerability privately through GitHub's "Report a vulnerability"
   payload.
 - Sends the refresh token only to the member API's
   `GET /api/Auth/RefreshToken`, in the same header, when the access token
-  (about 10 minutes long) has expired or expires within 60 s. The new pair
+  (about 10 minutes long) has expired or expires within 60 s, or once per
+  command when the API answers a read 403. The new pair
   replaces the old one in the vault. How long a refresh token lasts is not
   known yet.
 - Each refresh answers a new refresh token, so the renewal holds an

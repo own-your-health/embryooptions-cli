@@ -108,7 +108,10 @@ instead before the first read, when the access token expires within
 `portal::REFRESH_MARGIN` (60 s), under `SessionStore::renew`: cli-common's
 `RefreshLock` (DESIGN.md §1.7) is held from the read of the stored session
 to the write of the new pair, and nothing is sent if another process
-renewed or signed in meanwhile. A sign-in stores with `put_signin` (after
+renewed or signed in meanwhile. That trigger is the local clock, so
+`Site::api` also renews once per command when a read is answered 403
+(`Reason::Forbidden`) and sends the read again. A sign-in stores with
+`put_signin` (after
 `before_signin`, before the browser opens), and `delete` and `clear` go
 through `RefreshLock::forget`. A refresh that fails otherwise than refused
 leaves a token not yet expired to be read with, with a warning. A refresh
@@ -138,7 +141,8 @@ are built by `token::test_token` from synthetic claims.
   session in an in-memory vault: the token headers, the member's id filled
   in, another member's path, the token refresh (renewed and stored once,
   refused, failed with the token still valid, no refresh token, a sign-in
-  stored meanwhile or during the renewal), and the refusals.
+  stored meanwhile or during the renewal, a pair that cannot be stored, a
+  read's 403), and the refusals. `Env::warnings` keeps a test's warnings.
 - `tests/no_personal_data.rs`.
 
 `make verify` = fmt-check, clippy, test, smoke.

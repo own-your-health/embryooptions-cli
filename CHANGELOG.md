@@ -28,6 +28,7 @@
   same refresh token; a sign-in and a logout take it for their write. A
   refused refresh, or an expired token with no refresh token, is exit 3. A
   refresh that fails otherwise leaves a token not yet expired to be read
-  with.
+  with. A read answered 403 renews once per command and is sent again, for
+  a clock that is off or a token the API stopped taking early.
 - The sign-in remedies name the clinic: `auth login --browser --clinic
   <SLUG> --profile <NAME> --overwrite`.

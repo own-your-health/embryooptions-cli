@@ -142,12 +142,17 @@ On a 403 the app renews its tokens and retries the call once (*observed*):
    `X-XSRF-TOKEN: Bearer <refreshToken>`, and `IvfCenterId`.
 2. The answer is a new pair, `{"accessToken", "refreshToken"}`.
 
-embryooptions renews before a command's first read instead of after a 403
-(`portal::Site::open`, `client::refresh`):
+embryooptions renews before a command's first read (`portal::Site::open`,
+`client::refresh`), and after a 403 as the app does (`portal::Site::api`):
 
-- An access token that has expired, or expires within 60 s, is renewed
-  once, and the new pair is stored in the profile's vault entry. An answer
-  without a refresh token keeps the old one.
+- An access token that has expired, or expires within 60 s by this
+  machine's clock, is renewed once, and the new pair is stored in the
+  profile's vault entry. An answer without a refresh token keeps the old
+  one.
+- The clock can be wrong, and the API can stop taking a token before its
+  `exp`. So a read the API answers 403 renews the session once per command
+  and is sent again with the new token. A second 403 stands (exit 5, naming
+  the sign-in).
 - Each answer carries a new refresh token, so two processes must never
   present the same one. The renewal holds cli-common's `RefreshLock`
   (`~/.config/embryooptions/token-refresh.lock`) from the read of the

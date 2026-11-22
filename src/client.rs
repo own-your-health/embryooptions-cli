@@ -162,14 +162,28 @@ impl Client {
         Ok(answer)
     }
 
-    fn get(&self, read: &Resolved, accept: &str) -> Result<Answer, CliError> {
-        let what = read.what.clone();
+    /// Waits until [`PACE`] (the client's pace) has passed since the last
+    /// answer, before a request: a read, or the token refresh between two.
+    pub fn pause(&self) {
         if let Some(last) = self.last.get() {
             let since = last.elapsed();
             if since < self.pace {
                 std::thread::sleep(self.pace - since);
             }
         }
+    }
+
+    /// This client for `session`'s renewed tokens, for the same profile and
+    /// API, paced from now: the refresh just answered.
+    pub fn replaced(&self, session: &Session) -> Result<Client, CliError> {
+        let client = Client::new(session, &self.profile, &self.base, self.pace)?;
+        client.last.set(Some(Instant::now()));
+        Ok(client)
+    }
+
+    fn get(&self, read: &Resolved, accept: &str) -> Result<Answer, CliError> {
+        let what = read.what.clone();
+        self.pause();
         let result = self
             .http
             .get(format!("{}{}", self.base, read.path))
@@ -531,7 +545,12 @@ pub fn refuse(a: &Answer, profile: &ProfileName, clinic: &Clinic) -> Result<(), 
             "sign in again with `{}`, which keeps the browser's user agent",
             login_remedy(profile, clinic)
         ))),
-        403 => Err(CliError::Upstream(format!("Embryo Options refused {what} (HTTP 403)")).because(Reason::Forbidden)),
+        403 => Err(CliError::Upstream(format!("Embryo Options refused {what} (HTTP 403)"))
+            .because(Reason::Forbidden)
+            .with_remedy(format!(
+                "the API answers 403 to a token it no longer takes: sign in again with `{}`",
+                login_remedy(profile, clinic)
+            ))),
         404 => Err(CliError::NotFound(format!("Embryo Options has no {what} (HTTP 404)"))),
         429 => {
             let e = CliError::Upstream(format!(

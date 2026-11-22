@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use embryooptions::client::api_path;
-use embryooptions::portal::{Env, Site};
+use embryooptions::portal::{Env, Site, Warnings};
 use embryooptions::session::{Session, SessionStore};
 use embryooptions::site::Clinic;
 use embryooptions::token::{test_token, Tokens};
@@ -42,8 +42,9 @@ struct Server {
 }
 
 type Routes = BTreeMap<String, (u16, &'static str, String)>;
-/// Runs with each request's target before it is answered.
-type Hook = Box<dyn Fn(&str) + Send>;
+/// Runs with each request before it is answered, and answers it instead of
+/// `routes` when it returns one.
+type Hook = Box<dyn Fn(&Seen) -> Option<(u16, &'static str, String)> + Send>;
 
 fn serve(routes: Routes) -> Server {
     serve_with(routes, None)
@@ -73,18 +74,17 @@ fn serve_with(routes: Routes, hook: Option<Hook>) -> Server {
                     k.eq_ignore_ascii_case(name).then(|| v.trim().to_string())
                 })
             };
-            log.lock().unwrap().push(Seen {
+            let request = Seen {
                 target: target.clone(),
                 token: header("x-xsrf-token"),
                 authorization: header("authorization"),
                 center: header("ivfcenterid"),
                 user_agent: header("user-agent"),
                 cookie: header("cookie"),
-            });
-            if let Some(hook) = &hook {
-                hook(&target);
-            }
-            let (status, mime, body) = routes.get(&target).cloned().unwrap_or((
+            };
+            log.lock().unwrap().push(request.clone());
+            let hooked = hook.as_ref().and_then(|hook| hook(&request));
+            let (status, mime, body) = hooked.or_else(|| routes.get(&target).cloned()).unwrap_or((
                 404,
                 "application/json",
                 r#"{"message":"not found"}"#.to_string(),
@@ -200,6 +200,7 @@ fn env_in(server: &Server, vault: &Shared, access: String, refresh: Option<&str>
         sessions: store,
         base: server.base.clone(),
         pace: Duration::ZERO,
+        warnings: Warnings::kept(),
     }
 }
 
@@ -456,6 +457,12 @@ fn a_failed_refresh_of_a_valid_token_reads_with_it() {
     assert_eq!(seen[1].token, Some(format!("Bearer {}", token(soon))));
     let stored = env.sessions.get(&adult1()).unwrap().unwrap();
     assert_eq!(stored.access_token.expose(), token(soon));
+    let warnings = env.warnings.lines();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("was not renewed") && warnings[0].contains("RefreshToken with HTTP 503"),
+        "{warnings:?}"
+    );
 
     // An expired one is not read with: the same failure is exit 5.
     let server = serve(routes_refreshing(503));
@@ -515,8 +522,8 @@ fn a_sign_in_during_a_renewal_is_stored_after_it() {
     let hook: Hook = {
         let shared = shared.clone();
         let signer = signer.clone();
-        Box::new(move |target: &str| {
-            if target == "/api/Auth/RefreshToken" {
+        Box::new(move |request: &Seen| {
+            if request.target == "/api/Auth/RefreshToken" {
                 let other = store_of(&shared);
                 *signer.lock().unwrap() = Some(std::thread::spawn(move || {
                     other
@@ -524,6 +531,7 @@ fn a_sign_in_during_a_renewal_is_stored_after_it() {
                         .unwrap();
                 }));
             }
+            None
         })
     };
     let server = serve_with(routes_refreshing(200), Some(hook));
@@ -539,6 +547,118 @@ fn a_sign_in_during_a_renewal_is_stored_after_it() {
     );
 }
 
+const ACCOUNT_READ: &str = "/api/Members/4242/MemberAccount/Member?ivfCenterId=7";
+
+fn account_path() -> embryooptions::client::ApiPath {
+    api_path("/api/Members/{memberId}/MemberAccount/Member?ivfCenterId={ivfCenterId}").unwrap()
+}
+
+/// A read the API answers 403, whatever the clock says of the token, is
+/// renewed once and sent again with the new token, and the new pair is
+/// stored. A second 403 in the same command is not renewed again: it is
+/// exit 5, naming the sign-in.
+#[test]
+fn a_read_answered_403_renews_once_and_is_sent_again() {
+    let shared = vault("read-403");
+    let hook: Hook = Box::new(|request: &Seen| {
+        let old = request.token == Some(format!("Bearer {}", token(LATER)));
+        (request.target == ACCOUNT_READ && old).then(|| (403, "application/json", String::new()))
+    });
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &shared, token(LATER), Some("dummy-refresh"));
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert_eq!(server.seen.lock().unwrap().len(), 0, "not due by the clock");
+    let a = site.api(&account_path()).unwrap();
+    assert_eq!(a.status, 200);
+
+    let seen = server.seen.lock().unwrap().clone();
+    let targets: Vec<_> = seen.iter().map(|s| s.target.as_str()).collect();
+    assert_eq!(targets, [ACCOUNT_READ, "/api/Auth/RefreshToken", ACCOUNT_READ]);
+    assert_eq!(seen[1].token.as_deref(), Some("Bearer dummy-refresh"));
+    assert_eq!(seen[2].token, Some(format!("Bearer {}", token(RENEWED))));
+    let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+    assert_eq!(stored.access_token.expose(), token(RENEWED));
+
+    // Every token refused: one renewal, then the 403 stands.
+    let hook: Hook =
+        Box::new(|request: &Seen| (request.target == ACCOUNT_READ).then(|| (403, "application/json", String::new())));
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &vault("read-403-always"), token(LATER), Some("dummy-refresh"));
+    let site = Site::open(&env, &adult1()).unwrap();
+    let e = site.api(&account_path()).err().unwrap();
+    assert_eq!(e.exit_code(), 5, "{e}");
+    assert!(
+        e.remedy()
+            .unwrap()
+            .contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
+        "{e}"
+    );
+    let e = site.api(&account_path()).err().unwrap();
+    assert_eq!(e.exit_code(), 5, "{e}");
+    let targets: Vec<_> = server.seen.lock().unwrap().iter().map(|s| s.target.clone()).collect();
+    assert_eq!(
+        targets,
+        [ACCOUNT_READ, "/api/Auth/RefreshToken", ACCOUNT_READ, ACCOUNT_READ]
+    );
+}
+
+/// A read's 403 with no refresh token stored is the 403, with nothing more
+/// sent.
+#[test]
+fn a_read_answered_403_without_a_refresh_token_sends_nothing_more() {
+    let hook: Hook =
+        Box::new(|request: &Seen| (request.target == ACCOUNT_READ).then(|| (403, "application/json", String::new())));
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &vault("read-403-none"), token(LATER), None);
+    let e = Site::open(&env, &adult1()).unwrap().api(&account_path()).err().unwrap();
+    assert_eq!(e.exit_code(), 5, "{e}");
+    assert_eq!(server.seen.lock().unwrap().len(), 1);
+}
+
+/// A renewed pair the vault cannot store is still read with, and the
+/// warning names the sign-in: the refresh has already spent the old pair.
+/// While the refresh is answered, the vault's directory is moved aside and
+/// a file put in its place, so the write fails.
+#[test]
+fn a_renewed_pair_that_cannot_be_stored_is_read_with() {
+    let shared = vault("unstorable");
+    let dir = shared.1.clone();
+    let aside = dir.with_extension("aside");
+    let hook: Hook = {
+        let (dir, aside) = (dir.clone(), aside.clone());
+        Box::new(move |request: &Seen| {
+            if request.target == "/api/Auth/RefreshToken" {
+                std::fs::rename(&dir, &aside).unwrap();
+                std::fs::write(&dir, b"").unwrap();
+            }
+            None
+        })
+    };
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &shared, token(EXPIRED), Some("dummy-refresh"));
+    let site = Site::open(&env, &adult1()).unwrap();
+    let read = site.api(&account_path()).map(|a| a.status);
+    std::fs::remove_file(&dir).unwrap();
+    std::fs::rename(&aside, &dir).unwrap();
+    assert_eq!(read.unwrap(), 200);
+
+    let seen = server.seen.lock().unwrap().clone();
+    assert_eq!(seen[1].token, Some(format!("Bearer {}", token(RENEWED))));
+    let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+    assert_eq!(stored.access_token.expose(), token(EXPIRED), "nothing was stored");
+    let warnings = env.warnings.lines();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("renewed Embryo Options sign-in was not stored"),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings[0].contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
+        "{warnings:?}"
+    );
+    assert!(!warnings[0].contains("dummy-refresh"), "{warnings:?}");
+}
+
 #[test]
 fn no_session_is_exit_3_naming_the_sign_in() {
     let server = serve(routes());
@@ -546,6 +666,7 @@ fn no_session_is_exit_3_naming_the_sign_in() {
         sessions: store_of(&vault("none")),
         base: server.base.clone(),
         pace: Duration::ZERO,
+        warnings: Warnings::kept(),
     };
     let e = Site::open(&env, &adult1()).err().unwrap();
     assert_eq!(e.exit_code(), 3);

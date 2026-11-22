@@ -14,8 +14,9 @@ use pk_cli_core::CliError;
 use pk_cli_secrets::Secret;
 use serde_json::Value;
 
-/// What a sign-in hands over: the access token, and the refresh token the
-/// web app keeps beside it (stored, not yet used: docs/api.md).
+/// What a sign-in or a token refresh hands over: the access token, and the
+/// refresh token the web app keeps beside it (`client::refresh` renews the
+/// access token with it: docs/api.md).
 pub struct Tokens {
     pub access: Secret,
     pub refresh: Option<Secret>,
