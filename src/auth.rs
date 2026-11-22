@@ -93,6 +93,8 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
             )))
         }
     };
+    // A stuck lock fails here, before anyone signs in (`store.put_signin`).
+    store.before_signin()?;
     let session = match manual {
         false => browser_session(profile, &clinic, browser.fresh_profile, verify, quiet)?,
         true => manual_session(
@@ -104,7 +106,7 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
             |tokens, agent| site::confirm_tokens_at(&base, tokens, agent),
         )?,
     };
-    store.put(profile, &session)?;
+    store.put_signin(profile, &session)?;
     if verify {
         if !quiet {
             eprintln!("Embryo Options session at {clinic} stored for profile `{profile}`");
@@ -414,7 +416,7 @@ pub fn reset(force: bool, interactive: bool, json: bool, quiet: bool) -> Result<
     } else if !quiet {
         eprintln!(
             "reset: {removed} stored session(s) and the vault's key removed; sign in again with `{BIN} auth login \
-             --browser --profile <NAME>`"
+             --browser --clinic <SLUG> --profile <NAME>`"
         );
     }
     Ok(())

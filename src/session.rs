@@ -14,14 +14,22 @@
 //! asks the keychain once, however many profiles are signed in, and a run
 //! with nothing stored reads no keychain item at all.
 //!
+//! A renewal holds cli-common's `RefreshLock` (DESIGN.md §1.7) from the read
+//! of the stored session to the write of the renewed one, so two
+//! embryooptions processes never present the same refresh token: the
+//! renewal's answer carries a new one. A sign-in's write and a logout's
+//! delete hold it too, so a renewal in flight cannot overwrite them. The lock
+//! is the empty file `~/.config/embryooptions/token-refresh.lock`.
+//!
 //! [`KEYCHAIN_SERVICE_ENV`] names another keychain service for the key, for
 //! the tests and the smoke run, and moves the vault under
-//! `$XDG_CONFIG_HOME/embryooptions/vault`, which must then be set: a test's
-//! vault is never the owner's. While it is set ([`hermetic`]) nothing
+//! `$XDG_CONFIG_HOME/embryooptions/vault`, which must then be set, and the
+//! lock beside it: a test's vault and lock are never the owner's. While it is set ([`hermetic`]) nothing
 //! touches the real browser profiles either.
 
 use std::path::PathBuf;
 
+use pk_cli_auth::refresh_lock::RefreshLock;
 use pk_cli_auth::vault::{self, Vault};
 use pk_cli_config::profile::ProfileName;
 use pk_cli_core::{CliError, Reason};
@@ -86,6 +94,23 @@ impl Session {
         }
     }
 
+    /// This session with the pair a token refresh answered. An answer
+    /// without a refresh token keeps this session's.
+    pub fn renewed(&self, tokens: Tokens) -> Session {
+        let refresh_token = tokens.refresh.or_else(|| {
+            self.refresh_token
+                .as_ref()
+                .map(|old| Secret::new(old.expose().to_string()))
+        });
+        Session {
+            clinic: self.clinic.clone(),
+            access_token: tokens.access,
+            refresh_token,
+            user_agent: self.user_agent.clone(),
+            captured_at: self.captured_at.clone(),
+        }
+    }
+
     /// The access token's claims (`token::claims`).
     pub fn claims(&self) -> Result<Claims, CliError> {
         crate::token::claims(self.access_token.expose())
@@ -118,23 +143,56 @@ impl Session {
 /// The sessions, one per profile.
 pub struct SessionStore {
     vault: Vault,
+    /// Shared by every process that renews, stores or deletes these sessions.
+    lock: RefreshLock,
 }
 
 impl SessionStore {
     /// The store every command uses: the vault of `piekstra.embryooptions`, or with
     /// [`KEYCHAIN_SERVICE_ENV`] a test's ([`hermetic`]).
     pub fn open() -> Result<SessionStore, CliError> {
-        let vault = match service_override(service_env().as_deref()) {
-            None => Vault::for_binary(BIN)?,
-            Some(service) => Vault::new(CredentialStore::new(service), test_vault_dir()?),
+        let (vault, lock) = match service_override(service_env().as_deref()) {
+            None => (Vault::for_binary(BIN)?, RefreshLock::for_binary(BIN)?),
+            Some(service) => {
+                let dir = test_vault_dir()?;
+                let lock = RefreshLock::at(dir.with_file_name("token-refresh.lock"));
+                (Vault::new(CredentialStore::new(service), dir), lock)
+            }
         };
-        Ok(SessionStore { vault })
+        Ok(SessionStore { vault, lock })
     }
 
-    /// A store over `vault`: the tests' in-memory one
-    /// (`Vault::new(MemoryKeys::new(), dir)`).
-    pub fn with_vault(vault: Vault) -> SessionStore {
-        SessionStore { vault }
+    /// A store over `vault` with `lock`: the tests' in-memory vault
+    /// (`Vault::new(MemoryKeys::new(), dir)`) and a lock of their own.
+    pub fn with_vault(vault: Vault, lock: RefreshLock) -> SessionStore {
+        SessionStore { vault, lock }
+    }
+
+    /// One renewal of the profile's session under the lock: the stored
+    /// session is read again, and `grant` runs only if `due` still holds for
+    /// it. Otherwise another process renewed it, or signed in, meanwhile,
+    /// and that session is the answer, with nothing sent. `grant` stores what
+    /// it returns.
+    pub fn renew(
+        &self,
+        profile: &ProfileName,
+        due: impl FnOnce(&Session) -> bool,
+        grant: impl FnOnce(Session) -> Result<Session, CliError>,
+    ) -> Result<Session, CliError> {
+        self.lock.renew(|| self.load(profile), due, grant)
+    }
+
+    /// Before a sign-in opens the browser or reads stdin: a stuck or
+    /// unusable lock fails here, before anyone signs in.
+    pub fn before_signin(&self) -> Result<(), CliError> {
+        self.lock.before_signin()
+    }
+
+    /// A sign-in's write, under the lock, so a renewal in flight cannot
+    /// overwrite it. Without the lock the error says the session was not
+    /// stored.
+    pub fn put_signin(&self, profile: &ProfileName, session: &Session) -> Result<(), CliError> {
+        self.lock.store_signin(|| self.put(profile, session))
     }
 
     /// The profile's session, `None` when none is stored. An entry this embryooptions
@@ -168,15 +226,18 @@ impl SessionStore {
             .map_err(|e| remedied(e, profile))
     }
 
-    /// Whether there was a session to remove. Reads no keychain item.
+    /// Whether there was a session to remove. Reads no keychain item. The
+    /// delete runs whether or not the lock is free, and again once a renewal
+    /// in flight releases it (`RefreshLock::forget`).
     pub fn delete(&self, profile: &ProfileName) -> Result<bool, CliError> {
-        self.vault.delete(&entry(profile))
+        self.lock.forget(|| self.vault.delete(&entry(profile)))
     }
 
-    /// Remove every profile's session and the vault's key (`auth reset`).
-    /// How many entries were removed.
+    /// Remove every profile's session and the vault's key (`auth reset`),
+    /// as [`delete`](Self::delete) does with the lock. How many entries were
+    /// removed.
     pub fn clear(&self) -> Result<usize, CliError> {
-        self.vault.clear()
+        self.lock.forget(|| self.vault.clear())
     }
 }
 
@@ -271,6 +332,11 @@ mod tests {
     use pk_cli_auth::vault::MemoryKeys;
     use std::sync::Arc;
 
+    /// A lock file beside a test's vault directory, not in it.
+    fn lock_beside(dir: &std::path::Path) -> RefreshLock {
+        RefreshLock::at(dir.with_extension("refresh-lock"))
+    }
+
     fn temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("embryooptions-session-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -342,7 +408,7 @@ mod tests {
     fn each_profile_has_its_own_entry() {
         let dir = temp_dir("entries");
         let keys = Arc::new(MemoryKeys::new());
-        let store = SessionStore::with_vault(Vault::new(keys.clone(), &dir));
+        let store = SessionStore::with_vault(Vault::new(keys.clone(), &dir), lock_beside(&dir));
         let adult2 = ProfileName::parse("adult2").unwrap();
         assert!(store.get(&adult1()).unwrap().is_none());
         assert_eq!(keys.reads(), 0, "nothing stored, nothing read");
@@ -398,7 +464,7 @@ mod tests {
                 &Secret::new(r#"{"clinic":"not a clinic","access_token":"dummy_secret","captured_at":"x"}"#),
             )
             .unwrap();
-        let store = SessionStore::with_vault(vault);
+        let store = SessionStore::with_vault(vault, lock_beside(&dir));
         for name in ["adult1", "adult2", "adult3"] {
             let e = store.get(&ProfileName::parse(name).unwrap()).err().unwrap();
             assert_eq!(e.exit_code(), 1, "{name}");
@@ -417,7 +483,7 @@ mod tests {
     fn a_lost_key_names_auth_reset() {
         let dir = temp_dir("lost");
         let keys = Arc::new(MemoryKeys::new());
-        let store = SessionStore::with_vault(Vault::new(keys.clone(), &dir));
+        let store = SessionStore::with_vault(Vault::new(keys.clone(), &dir), lock_beside(&dir));
         let tokens = Tokens {
             access: Secret::new("dummy_access"),
             refresh: None,
@@ -429,7 +495,7 @@ mod tests {
             )
             .unwrap();
         keys.forget();
-        let fresh = SessionStore::with_vault(Vault::new(keys, &dir));
+        let fresh = SessionStore::with_vault(Vault::new(keys, &dir), lock_beside(&dir));
         let e = fresh.get(&adult1()).err().unwrap();
         assert!(e.remedy().unwrap().contains("auth reset"), "{e}");
         std::fs::remove_dir_all(&dir).unwrap();

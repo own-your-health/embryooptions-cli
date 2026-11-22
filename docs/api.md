@@ -148,12 +148,20 @@ embryooptions renews before a command's first read instead of after a 403
 - An access token that has expired, or expires within 60 s, is renewed
   once, and the new pair is stored in the profile's vault entry. An answer
   without a refresh token keeps the old one.
-- The new pair is stored only if the vault still holds the token that was
-  renewed: a sign-in made meanwhile is kept.
+- Each answer carries a new refresh token, so two processes must never
+  present the same one. The renewal holds cli-common's `RefreshLock`
+  (`~/.config/embryooptions/token-refresh.lock`) from the read of the
+  stored session to the write of the new pair, and sends nothing if
+  another process renewed or signed in meanwhile. A sign-in's write and a
+  logout's delete take the lock too, so a renewal in flight cannot undo
+  them.
 - A refresh answered 401 or 403 is exit 3, naming
   `embryooptions auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`.
   So is an expired token with no refresh token stored.
-- Any other failure, or an answer without an access token, is exit 5.
+- Any other failure, or an answer without an access token, is exit 5 for
+  a token that has expired. A token that has not yet expired is read with,
+  with a warning.
+- A new pair that cannot be stored is still read with, with a warning.
 
 How long a refresh token lasts is not known yet.
 

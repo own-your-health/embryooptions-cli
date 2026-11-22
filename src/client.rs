@@ -430,12 +430,11 @@ pub const REFRESH: &str = "/api/Auth/RefreshToken";
 pub fn refresh(base: &str, session: &Session, profile: &ProfileName) -> Result<crate::token::Tokens, CliError> {
     let what = format!("GET {REFRESH}");
     let Some(refresh) = &session.refresh_token else {
-        return Err(refused_session(
-            &what,
-            "no refresh token was stored with the sign-in",
-            profile,
-            &session.clinic,
-        ));
+        return Err(CliError::Auth(format!(
+            "no refresh token is stored with profile `{profile}`'s Embryo Options sign-in, so it cannot be renewed"
+        ))
+        .because(Reason::NoCredential)
+        .with_remedy(login_remedy(profile, &session.clinic)));
     };
     let mut headers = token_headers(refresh.expose())?;
     if let Some(center) = session.claims().ok().and_then(|c| c.ivf_center_id) {
@@ -469,8 +468,9 @@ pub fn refresh(base: &str, session: &Session, profile: &ProfileName) -> Result<c
     let status = answer.status().as_u16();
     if status == 401 || status == 403 {
         return Err(refused_session(
+            "refresh token",
             &what,
-            &format!("HTTP {status}: the refresh token is no longer accepted"),
+            &format!("HTTP {status}"),
             profile,
             &session.clinic,
         ));
@@ -500,9 +500,11 @@ pub fn login_remedy(profile: &ProfileName, clinic: &Clinic) -> String {
     format!("{BIN} auth login --browser --clinic {clinic} --profile {profile} --overwrite")
 }
 
-fn refused_session(what: &str, said: &str, profile: &ProfileName, clinic: &Clinic) -> CliError {
+/// Exit 3: Embryo Options refused the profile's `token` (the access token or
+/// the refresh token) when it was sent to `what`.
+fn refused_session(token: &str, what: &str, said: &str, profile: &ProfileName, clinic: &Clinic) -> CliError {
     CliError::Auth(format!(
-        "Embryo Options refused profile `{profile}`'s access token ({what}: {said}): it has signed out or expired"
+        "Embryo Options refused profile `{profile}`'s {token} ({what}: {said}): it has signed out or expired"
     ))
     .because(Reason::CredentialRefused)
     .with_remedy(login_remedy(profile, clinic))
@@ -517,7 +519,7 @@ pub fn refuse(a: &Answer, profile: &ProfileName, clinic: &Clinic) -> Result<(), 
     let html = a.content_type.as_deref().is_some_and(|t| t.contains("html"));
     match status {
         200..=299 => Ok(()),
-        401 => Err(refused_session(what, "HTTP 401", profile, clinic)),
+        401 => Err(refused_session("access token", what, "HTTP 401", profile, clinic)),
         300..=399 => Err(CliError::Upstream(format!(
             "Embryo Options answered {what} with a redirect (HTTP {status}); the API may have changed"
         ))),

@@ -8,7 +8,7 @@ use pk_cli_config::profile::ProfileName;
 use pk_cli_core::{CliError, Reason};
 
 use crate::client::{self, Answer, ApiPath, Client};
-use crate::session::SessionStore;
+use crate::session::{Session, SessionStore};
 use crate::token::Claims;
 
 /// Where sessions are kept and which API is read.
@@ -47,41 +47,41 @@ pub struct Site {
 impl Site {
     /// The profile's stored session: none stored, or a token from the
     /// site's registration step, is exit 3 naming the sign-in, before any
-    /// request. An access token that has expired, or expires within
-    /// [`REFRESH_MARGIN`] seconds, is renewed first with the refresh token
-    /// ([`client::refresh`]) and the new pair stored, unless a sign-in made
-    /// meanwhile replaced the session.
+    /// request.
+    ///
+    /// An access token that has expired, or expires within
+    /// [`REFRESH_MARGIN`] seconds, is renewed first under the session
+    /// store's lock ([`SessionStore::renew`]): the stored session is read
+    /// again, and unless another process renewed it or signed in meanwhile,
+    /// [`client::refresh`] asks for a new pair and it is stored. A pair that
+    /// cannot be stored is still read with, with a warning. A renewal that
+    /// fails for any reason but a refused refresh token (exit 3) leaves a
+    /// token that has not yet expired to be read with, with a warning.
     pub fn open(env: &Env, profile: &ProfileName) -> Result<Site, CliError> {
         let mut session = env.sessions.load(profile)?;
-        let due = session
-            .claims()
-            .ok()
-            .and_then(|c| c.expires_at)
-            .is_some_and(|exp| exp - REFRESH_MARGIN <= now_unix());
-        let renewing = due && session.refresh_token.is_some();
-        if renewing {
-            let tokens = client::refresh(&env.base, &session, profile)?;
-            let refresh_token = match tokens.refresh {
-                Some(new) => Some(new),
-                None => session
-                    .refresh_token
-                    .as_ref()
-                    .map(|old| pk_cli_secrets::Secret::new(old.expose().to_string())),
-            };
-            let renewed = crate::session::Session {
-                clinic: session.clinic.clone(),
-                access_token: tokens.access,
-                refresh_token,
-                user_agent: session.user_agent.clone(),
-                captured_at: session.captured_at.clone(),
-            };
-            match env.sessions.get(profile)? {
-                Some(stored) if stored.access_token.expose() == session.access_token.expose() => {
-                    env.sessions.put(profile, &renewed)?;
+        let mut renewed = false;
+        if due(&session) {
+            let attempt = env.sessions.renew(profile, due, |latest| {
+                let tokens = client::refresh(&env.base, &latest, profile)?;
+                let fresh = latest.renewed(tokens);
+                renewed = true;
+                if let Err(e) = env.sessions.put(profile, &fresh) {
+                    eprintln!(
+                        "warning: profile `{profile}`'s renewed Embryo Options sign-in was not stored ({e}); this \
+                         command reads with it, and the next may need `{}`",
+                        client::login_remedy(profile, &latest.clinic)
+                    );
                 }
-                _ => {}
+                Ok(fresh)
+            });
+            match attempt {
+                Ok(latest) => session = latest,
+                Err(e) if e.exit_code() != 3 && !expired(&session) => eprintln!(
+                    "warning: profile `{profile}`'s Embryo Options sign-in was not renewed ({e}); this command \
+                     reads with the current token, which expires within {REFRESH_MARGIN} s"
+                ),
+                Err(e) => return Err(e),
             }
-            session = renewed;
         }
         let claims = session.claims().map_err(|_| {
             CliError::Auth(format!(
@@ -102,7 +102,7 @@ impl Site {
                 .expires_at
                 .map(pk_cli_core::dates::fmt_rfc3339)
                 .unwrap_or_default();
-            let why = if renewing {
+            let why = if renewed {
                 "and Embryo Options renewed it with a token that had expired too"
             } else {
                 "and no refresh token was stored to renew it"
@@ -128,6 +128,22 @@ impl Site {
 /// How long before its expiry an access token is renewed, in seconds: a
 /// command's reads take less.
 pub const REFRESH_MARGIN: i64 = 60;
+
+/// Whether `session` is due a renewal: it has a refresh token, and its
+/// access token has expired or expires within [`REFRESH_MARGIN`].
+fn due(session: &Session) -> bool {
+    session.refresh_token.is_some()
+        && session
+            .claims()
+            .ok()
+            .and_then(|c| c.expires_at)
+            .is_some_and(|exp| exp - REFRESH_MARGIN <= now_unix())
+}
+
+/// Whether `session`'s access token has expired ([`Claims::expired_at`]).
+fn expired(session: &Session) -> bool {
+    session.claims().is_ok_and(|c| c.expired_at(now_unix()))
+}
 
 /// Now, Unix seconds.
 pub fn now_unix() -> i64 {

@@ -105,9 +105,15 @@ An access token lasts about 10 minutes, and the API answers an expired one
 with 403. The app renews on a 403 with `GET /api/Auth/RefreshToken`, the
 refresh token in the same header, and gets a new pair. `Site::open` renews
 instead before the first read, when the access token expires within
-`portal::REFRESH_MARGIN` (60 s), and stores the new pair unless the vault
-meanwhile holds another sign-in. A refresh answered 401 or 403, or an
-expired token with no refresh token, is exit 3 with the remedy
+`portal::REFRESH_MARGIN` (60 s), under `SessionStore::renew`: cli-common's
+`RefreshLock` (DESIGN.md §1.7) is held from the read of the stored session
+to the write of the new pair, and nothing is sent if another process
+renewed or signed in meanwhile. A sign-in stores with `put_signin` (after
+`before_signin`, before the browser opens), and `delete` and `clear` go
+through `RefreshLock::forget`. A refresh that fails otherwise than refused
+leaves a token not yet expired to be read with, with a warning. A refresh
+answered 401 or 403, or an expired token with no refresh token, is exit 3
+with the remedy
 `auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`, the
 clinic filled in from the session. How long a refresh token lasts is not
 known yet.
@@ -131,7 +137,8 @@ are built by `token::test_token` from synthetic claims.
 - `tests/site_e2e.rs`: the reads in-process against a loopback server, the
   session in an in-memory vault: the token headers, the member's id filled
   in, another member's path, the token refresh (renewed and stored once,
-  refused, no refresh token, a sign-in stored meanwhile), and the refusals.
+  refused, failed with the token still valid, no refresh token, a sign-in
+  stored meanwhile or during the renewal), and the refusals.
 - `tests/no_personal_data.rs`.
 
 `make verify` = fmt-check, clippy, test, smoke.

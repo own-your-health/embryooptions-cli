@@ -42,8 +42,15 @@ Report a vulnerability privately through GitHub's "Report a vulnerability"
 - Sends the refresh token only to the member API's
   `GET /api/Auth/RefreshToken`, in the same header, when the access token
   (about 10 minutes long) has expired or expires within 60 s. The new pair
-  replaces the old one in the vault, unless another sign-in was stored
-  meanwhile. How long a refresh token lasts is not known yet.
+  replaces the old one in the vault. How long a refresh token lasts is not
+  known yet.
+- Each refresh answers a new refresh token, so the renewal holds an
+  exclusive lock on the empty file `~/.config/embryooptions/token-refresh.lock`
+  from the read of the stored session to the write of the new pair, and
+  sends nothing if another process renewed or signed in meanwhile
+  (cli-common's `RefreshLock`). A sign-in's write and a logout's delete hold
+  it too. The lock only excludes copies that take it: the protection starts
+  once every embryooptions sharing the vault is a release that has it.
 - Keeps one Chrome profile per embryooptions profile for `auth login --browser`:
   `~/Library/Application Support/piekstra.embryooptions/browser-profile-<profile>`
   (under `$XDG_DATA_HOME` on Linux), owner-only (`0700`; a launch is refused
