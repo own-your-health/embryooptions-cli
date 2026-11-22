@@ -1,5 +1,5 @@
 //! The Embryo Options access token: a JWT the clinic's web app keeps in
-//! `localStorage.accessToken` and sends as `Authorization: Bearer` to the
+//! `localStorage.accessToken` and sends as `X-XSRF-TOKEN: Bearer` to the
 //! member API. embryooptions reads its claims locally, from the
 //! base64url payload, without checking the signature (the API does that):
 //! the member id the API's paths carry, the clinic's id, and when the token

@@ -10,15 +10,16 @@ The portal also offers the choices about what happens to the specimens
 Embryo Options publishes no API and no developer program. Each clinic has
 its own web app on `https://<clinic>.embryooptions.com`, and every clinic's
 app calls one member API, `https://member-api.prod.embryooptions.com`,
-with the signed-in member's bearer token. embryooptions reads that API with
+with the signed-in member's access token. embryooptions reads that API with
 `GET`s only.
 
-Status: nothing signed in has been observed. On 2026-11-20, without signing
-in, a clinic's web app was opened and its `/env.js`, its JavaScript and its
-Terms of Use were read. Everything about the API below comes from that
-JavaScript, the code every visitor's browser downloads, and has not been
-seen answering. It is marked *bundle*. What was seen is marked *observed*.
-The first sign-in replaces the marks with what the API answers.
+Status: on 2026-11-20, without signing in, a clinic's web app was opened
+and its `/env.js`, its JavaScript and its Terms of Use were read. On
+2026-11-22 a member signed in, and the sign-in's answer, the headers the
+app sends, the account read, the token's lifetime and the token refresh
+were seen. What was seen is marked *observed*. The rest comes from the
+JavaScript alone, the code every visitor's browser downloads, and has not
+been seen answering; it is marked *bundle*.
 
 ## Where it is
 
@@ -51,8 +52,9 @@ The first sign-in replaces the marks with what the API answers.
    `application/json-patch+json` (*bundle*). A missing captcha token stops
    the sign-in in the page ("CaptchaValidationFailed").
 3. The answer holds `accessToken` and `refreshToken`. The app keeps both in
-   `localStorage` under those names (*bundle*), and sends the access token
-   as `Authorization: Bearer` with every API call (*bundle*).
+   `localStorage` under those names (*observed*). It sends the access token
+   with every API call as `X-XSRF-TOKEN: Bearer <accessToken>`, with the
+   clinic's id as `IvfCenterId` (*observed*): see [The headers](#the-headers).
 4. A first sign-in with the notice's credentials gives a token with an
    `intermediateUser` claim and no `user` claim. The app sends that member
    to `preempt-register`, where they set their own user name and password
@@ -98,7 +100,7 @@ profile uses it unless `--clinic` is given, and `auth logout` forgets it.
 
 ## The token
 
-The access token is a JWT. Its claims (*bundle*):
+The access token is a JWT. Its claims (*observed* for `user` and `exp`):
 
 | Claim | What it holds |
 |---|---|
@@ -112,22 +114,55 @@ embryooptions reads the claims locally, from the base64url payload
 token or the member's id. An error names a path with `{memberId}` in the
 member's place.
 
-The token's lifetime is not observed. `exp` decides: a stored token that
-has expired, with 30 s to spare, is exit 3 before any request.
+An access token lasts about 10 minutes (*observed*: `exp` is about 10
+minutes after the sign-in). The API answers an expired one with 403
+(*observed*), not 401.
 
-## Token refresh: not built
+## The headers
 
-The app renews its token with `GET /api/Auth/RefreshToken` (*bundle*). How
-it sends the refresh token is not read yet. embryooptions stores the
-refresh token with the session but does not call `RefreshToken` until it
-has been seen working. Until then an expired token means
-`embryooptions auth login --browser --profile <NAME> --overwrite`.
+The web app sends no `Authorization` header and no cookies to the member
+API (*observed*). Each request carries:
+
+| Header | Value |
+|---|---|
+| `X-XSRF-TOKEN` | `Bearer <accessToken>` |
+| `IvfCenterId` | the clinic's id, the token's `IVFCenterId` |
+| `X-SPA-Version` | the app's version |
+| `Accept-Language` | the browser's |
+
+The API answers an `Authorization: Bearer` header with 401 (*observed*).
+embryooptions sends `X-XSRF-TOKEN` and `IvfCenterId` as the app does, with
+the browser's user agent captured at sign-in, and no cookie.
+
+## Token refresh
+
+On a 403 the app renews its tokens and retries the call once (*observed*):
+
+1. `GET /api/Auth/RefreshToken` with the refresh token in the same header,
+   `X-XSRF-TOKEN: Bearer <refreshToken>`, and `IvfCenterId`.
+2. The answer is a new pair, `{"accessToken", "refreshToken"}`.
+
+embryooptions renews before a command's first read instead of after a 403
+(`portal::Site::open`, `client::refresh`):
+
+- An access token that has expired, or expires within 60 s, is renewed
+  once, and the new pair is stored in the profile's vault entry. An answer
+  without a refresh token keeps the old one.
+- The new pair is stored only if the vault still holds the token that was
+  renewed: a sign-in made meanwhile is kept.
+- A refresh answered 401 or 403 is exit 3, naming
+  `embryooptions auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`.
+  So is an expired token with no refresh token stored.
+- Any other failure, or an answer without an access token, is exit 5.
+
+How long a refresh token lasts is not known yet.
 
 ## The member API
 
-Every path below is a `GET` with `Authorization: Bearer <accessToken>`
-(*bundle*). None has been seen answering, so the fields of each answer are
-not known yet.
+Every path below is a `GET` with the [headers](#the-headers) above.
+`MemberAccount/Member` has been seen answering a JSON object (*observed*);
+its fields are not mapped here yet. The others have not been seen
+answering (*bundle*).
 
 | Path | What the app shows with it |
 |---|---|

@@ -81,16 +81,26 @@ account opens and does nothing on that step.
 token, `embryooptions` reads it from the page, checks it with one read of
 your account, stores it encrypted (`SECURITY.md`) and closes the window.
 
-How long a sign-in lasts has not been measured yet; the token says when it
-expires, and `auth status` shows it. `embryooptions` does not renew a token
-yet: once it has expired, a read exits 3 and prints the command that signs
-in again, `embryooptions auth login --browser --profile <NAME> --overwrite`.
-
-Without Chrome, `auth login --stdin --clinic <SLUG>` reads the token from a
-signed-in browser instead. Copy it from the browser's developer console on
-the clinic's page:
+Without Chrome, `auth login --stdin --clinic <SLUG>` reads the tokens from
+a signed-in browser instead. Copy them from the browser's developer console
+on the clinic's page:
 `copy(JSON.stringify({accessToken: localStorage.accessToken, refreshToken: localStorage.refreshToken}))`,
-then paste it into `embryooptions auth login --stdin --clinic <SLUG> --profile <NAME>`.
+then paste them into `embryooptions auth login --stdin --clinic <SLUG> --profile <NAME>`.
+An access token pasted alone works until it expires, about 10 minutes.
+
+### How long a sign-in lasts
+
+The sign-in gives two tokens. The access token, which every read sends,
+lasts about 10 minutes; `auth status` shows when the stored one expires.
+The refresh token renews it. When a command starts with an access token
+that has expired or expires within 60 seconds, `embryooptions` asks Embryo
+Options for a new pair with the refresh token, as the web app does, and
+stores it in place of the old one.
+
+How long a refresh token lasts is not known yet. Once Embryo Options
+refuses it, or with no refresh token stored, a read exits 3 and prints the
+command that signs in again:
+`embryooptions auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`.
 
 ## Commands
 

@@ -33,8 +33,17 @@ Report a vulnerability privately through GitHub's "Report a vulnerability"
   `~/.config/embryooptions/vault/`, with one key in the keychain (service
   `piekstra.embryooptions`, account `vault-key`). A token never goes on a
   command line or into a log, and errors never print it or the member's id.
+- Sends the access token only to the member API, as the web app does: in
+  the `X-XSRF-TOKEN` header as `Bearer <token>`, with the clinic's id as
+  `IvfCenterId`. It sends no `Authorization` header and no cookies, as the
+  app sends none.
 - Reads the token's claims (member id, clinic id, expiry) locally from its
-  payload. The refresh token is stored but not yet used.
+  payload.
+- Sends the refresh token only to the member API's
+  `GET /api/Auth/RefreshToken`, in the same header, when the access token
+  (about 10 minutes long) has expired or expires within 60 s. The new pair
+  replaces the old one in the vault, unless another sign-in was stored
+  meanwhile. How long a refresh token lasts is not known yet.
 - Keeps one Chrome profile per embryooptions profile for `auth login --browser`:
   `~/Library/Application Support/piekstra.embryooptions/browser-profile-<profile>`
   (under `$XDG_DATA_HOME` on Linux), owner-only (`0700`; a launch is refused

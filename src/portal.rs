@@ -45,36 +45,73 @@ pub struct Site {
 }
 
 impl Site {
-    /// The profile's stored session: none stored, a token from the site's
-    /// registration step, or one that has expired is exit 3 naming the
-    /// sign-in, before any request (the token refresh is not built:
-    /// docs/api.md).
+    /// The profile's stored session: none stored, or a token from the
+    /// site's registration step, is exit 3 naming the sign-in, before any
+    /// request. An access token that has expired, or expires within
+    /// [`REFRESH_MARGIN`] seconds, is renewed first with the refresh token
+    /// ([`client::refresh`]) and the new pair stored, unless a sign-in made
+    /// meanwhile replaced the session.
     pub fn open(env: &Env, profile: &ProfileName) -> Result<Site, CliError> {
-        let session = env.sessions.load(profile)?;
+        let mut session = env.sessions.load(profile)?;
+        let due = session
+            .claims()
+            .ok()
+            .and_then(|c| c.expires_at)
+            .is_some_and(|exp| exp - REFRESH_MARGIN <= now_unix());
+        let renewing = due && session.refresh_token.is_some();
+        if renewing {
+            let tokens = client::refresh(&env.base, &session, profile)?;
+            let refresh_token = match tokens.refresh {
+                Some(new) => Some(new),
+                None => session
+                    .refresh_token
+                    .as_ref()
+                    .map(|old| pk_cli_secrets::Secret::new(old.expose().to_string())),
+            };
+            let renewed = crate::session::Session {
+                clinic: session.clinic.clone(),
+                access_token: tokens.access,
+                refresh_token,
+                user_agent: session.user_agent.clone(),
+                captured_at: session.captured_at.clone(),
+            };
+            match env.sessions.get(profile)? {
+                Some(stored) if stored.access_token.expose() == session.access_token.expose() => {
+                    env.sessions.put(profile, &renewed)?;
+                }
+                _ => {}
+            }
+            session = renewed;
+        }
         let claims = session.claims().map_err(|_| {
             CliError::Auth(format!(
                 "the access token stored for profile `{profile}` does not read as an Embryo Options token"
             ))
             .because(Reason::CredentialUnreadable)
-            .with_remedy(client::login_remedy(profile))
+            .with_remedy(client::login_remedy(profile, &session.clinic))
         })?;
         if claims.intermediate || claims.member_id.is_none() {
             return Err(CliError::Auth(format!(
                 "profile `{profile}`'s sign-in stopped at the site's registration step, before the account"
             ))
             .because(Reason::CredentialRefused)
-            .with_remedy(client::login_remedy(profile)));
+            .with_remedy(client::login_remedy(profile, &session.clinic)));
         }
         if claims.expired_at(now_unix()) {
             let when = claims
                 .expires_at
                 .map(pk_cli_core::dates::fmt_rfc3339)
                 .unwrap_or_default();
+            let why = if renewing {
+                "and Embryo Options renewed it with a token that had expired too"
+            } else {
+                "and no refresh token was stored to renew it"
+            };
             return Err(CliError::Auth(format!(
-                "profile `{profile}`'s Embryo Options sign-in expired at {when}; embryooptions does not renew it yet"
+                "profile `{profile}`'s Embryo Options sign-in expired at {when}, {why}"
             ))
             .because(Reason::CredentialRefused)
-            .with_remedy(client::login_remedy(profile)));
+            .with_remedy(client::login_remedy(profile, &session.clinic)));
         }
         let client = Client::new(&session, profile, &env.base, env.pace)?;
         Ok(Site { client, claims })
@@ -87,6 +124,10 @@ impl Site {
         self.client.api(&read)
     }
 }
+
+/// How long before its expiry an access token is renewed, in seconds: a
+/// command's reads take less.
+pub const REFRESH_MARGIN: i64 = 60;
 
 /// Now, Unix seconds.
 pub fn now_unix() -> i64 {

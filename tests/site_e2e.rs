@@ -1,6 +1,7 @@
 //! The reads of Embryo Options's member API, in-process, against a loopback
 //! server, the session in an in-memory vault: the requests' paths and
-//! headers, the member's id filled in from the token, and the refusals.
+//! headers, the member's id filled in from the token, the token refresh,
+//! and the refusals.
 //! Nothing reads the real keychain or reaches the network. Every token is
 //! synthetic, built here.
 
@@ -24,7 +25,10 @@ use serde_json::json;
 #[derive(Debug, Clone)]
 struct Seen {
     target: String,
+    /// The `X-XSRF-TOKEN` header, which carries the token.
+    token: Option<String>,
     authorization: Option<String>,
+    center: Option<String>,
     user_agent: Option<String>,
     cookie: Option<String>,
 }
@@ -36,7 +40,15 @@ struct Server {
     seen: Arc<Mutex<Vec<Seen>>>,
 }
 
-fn serve(routes: BTreeMap<String, (u16, &'static str, String)>) -> Server {
+type Routes = BTreeMap<String, (u16, &'static str, String)>;
+/// Runs with each request's target before it is answered.
+type Hook = Box<dyn Fn(&str) + Send>;
+
+fn serve(routes: Routes) -> Server {
+    serve_with(routes, None)
+}
+
+fn serve_with(routes: Routes, hook: Option<Hook>) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -62,10 +74,15 @@ fn serve(routes: BTreeMap<String, (u16, &'static str, String)>) -> Server {
             };
             log.lock().unwrap().push(Seen {
                 target: target.clone(),
+                token: header("x-xsrf-token"),
                 authorization: header("authorization"),
+                center: header("ivfcenterid"),
                 user_agent: header("user-agent"),
                 cookie: header("cookie"),
             });
+            if let Some(hook) = &hook {
+                hook(&target);
+            }
             let (status, mime, body) = routes.get(&target).cloned().unwrap_or((
                 404,
                 "application/json",
@@ -91,8 +108,8 @@ fn serve(routes: BTreeMap<String, (u16, &'static str, String)>) -> Server {
 const ACCOUNT: &str = r#"{"memberAccount":{"unpaidBalance":12.5}}"#;
 const HISTORY: &str = r#"[{"date":"2026-01-02","amount":250.0}]"#;
 
-fn routes() -> BTreeMap<String, (u16, &'static str, String)> {
-    let mut r = BTreeMap::new();
+fn routes() -> Routes {
+    let mut r = Routes::new();
     r.insert(
         "/api/Members/4242/MemberAccount/Member?ivfCenterId=7".into(),
         (200, "application/json; charset=utf-8", ACCOUNT.to_string()),
@@ -143,23 +160,34 @@ fn token(exp: i64) -> String {
 
 const LATER: i64 = 4_000_000_000;
 
-/// An environment reading `server`, with adult1's session (`access`)
-/// stored.
-fn env_with(server: &Server, tag: &str, access: String) -> Env {
-    let store = SessionStore::with_vault(Vault::new(MemoryKeys::new(), temp_dir(tag)));
-    store
-        .put(
-            &adult1(),
-            &Session::new(
-                Clinic::parse("exampleclinic").unwrap(),
-                Tokens {
-                    access: Secret::new(access),
-                    refresh: Some(Secret::new("dummy-refresh")),
-                },
-                Some("Mozilla/5.0 (test)".into()),
-            ),
-        )
-        .unwrap();
+/// adult1's session at the example clinic.
+fn session(access: String, refresh: Option<&str>) -> Session {
+    Session::new(
+        Clinic::parse("exampleclinic").unwrap(),
+        Tokens {
+            access: Secret::new(access),
+            refresh: refresh.map(Secret::new),
+        },
+        Some("Mozilla/5.0 (test)".into()),
+    )
+}
+
+/// An in-memory vault in a temp dir: two stores over it share its key, so
+/// a test can store a sign-in from the server's thread.
+fn vault(tag: &str) -> (Arc<MemoryKeys>, std::path::PathBuf) {
+    (Arc::new(MemoryKeys::new()), temp_dir(tag))
+}
+
+/// An environment reading `server`, with adult1's session (`access`, and
+/// `refresh` as its refresh token) stored in `vault`.
+fn env_in(
+    server: &Server,
+    vault: &(Arc<MemoryKeys>, std::path::PathBuf),
+    access: String,
+    refresh: Option<&str>,
+) -> Env {
+    let store = SessionStore::with_vault(Vault::new(vault.0.clone(), vault.1.clone()));
+    store.put(&adult1(), &session(access, refresh)).unwrap();
     Env {
         sessions: store,
         base: server.base.clone(),
@@ -167,12 +195,33 @@ fn env_with(server: &Server, tag: &str, access: String) -> Env {
     }
 }
 
+fn env_with(server: &Server, tag: &str, access: String) -> Env {
+    env_in(server, &vault(tag), access, Some("dummy-refresh"))
+}
+
 fn env(server: &Server, tag: &str) -> Env {
     env_with(server, tag, token(LATER))
 }
 
+const EXPIRED: i64 = 1_000_000_000;
+/// A later expiry for the token a refresh hands back.
+const RENEWED: i64 = 4_100_000_000;
+
+/// The routes with `/api/Auth/RefreshToken` answering `status`, and with a
+/// new pair when it is 200.
+fn routes_refreshing(status: u16) -> Routes {
+    let mut r = routes();
+    let body = if status == 200 {
+        json!({ "accessToken": token(RENEWED), "refreshToken": "dummy-refresh-2" }).to_string()
+    } else {
+        String::new()
+    };
+    r.insert("/api/Auth/RefreshToken".into(), (status, "application/json", body));
+    r
+}
+
 #[test]
-fn the_api_fills_in_the_member_and_sends_the_bearer() {
+fn the_api_fills_in_the_member_and_sends_the_token_headers() {
     let server = serve(routes());
     let env = env(&server, "api");
     let site = Site::open(&env, &adult1()).unwrap();
@@ -190,9 +239,14 @@ fn the_api_fills_in_the_member_and_sends_the_bearer() {
     let seen = server.seen.lock().unwrap().clone();
     assert_eq!(seen.len(), 2);
     assert_eq!(seen[0].target, "/api/Members/4242/MemberAccount/Member?ivfCenterId=7");
-    assert_eq!(seen[0].authorization, Some(format!("Bearer {}", token(LATER))));
+    assert_eq!(seen[0].token, Some(format!("Bearer {}", token(LATER))));
+    assert_eq!(seen[0].center.as_deref(), Some("7"));
+    assert_eq!(
+        seen[0].authorization, None,
+        "the API answers an Authorization header with 401"
+    );
     assert_eq!(seen[0].user_agent.as_deref(), Some("Mozilla/5.0 (test)"));
-    assert_eq!(seen[0].cookie, None, "the API takes the bearer, no cookie");
+    assert_eq!(seen[0].cookie, None, "the API takes the token header, no cookie");
 }
 
 #[test]
@@ -212,7 +266,7 @@ fn a_refused_token_is_exit_3_and_the_rest_name_no_member() {
         if exit == 3 {
             assert!(
                 e.to_string()
-                    .contains("auth login --browser --profile adult1 --overwrite"),
+                    .contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
                 "{e}"
             );
         }
@@ -233,16 +287,21 @@ fn another_members_path_sends_nothing() {
     assert!(server.seen.lock().unwrap().is_empty());
 }
 
-/// An expired token, or one from the site's registration step, is exit 3
-/// before any request: the refresh is not built.
+/// An expired token with no refresh token, or one from the site's
+/// registration step, is exit 3 before any request.
 #[test]
 fn an_expired_or_unfinished_sign_in_is_exit_3_before_a_request() {
     let server = serve(routes());
-    let expired = env_with(&server, "expired", token(1_000_000_000));
+    let expired = env_in(&server, &vault("expired"), token(EXPIRED), None);
     let e = Site::open(&expired, &adult1()).err().unwrap();
     assert_eq!(e.exit_code(), 3);
     assert!(e.to_string().contains("expired at 2001-09-09T01:46:40Z"), "{e}");
-    assert!(e.to_string().contains("--overwrite"), "{e}");
+    assert!(e.to_string().contains("no refresh token"), "{e}");
+    assert!(
+        e.to_string()
+            .contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
+        "{e}"
+    );
 
     let intermediate = test_token(&json!({ "intermediateUser": json!({ "UserId": 4242 }).to_string() }));
     let unfinished = env_with(&server, "unfinished", intermediate);
@@ -255,6 +314,144 @@ fn an_expired_or_unfinished_sign_in_is_exit_3_before_a_request() {
     assert_eq!(e.exit_code(), 3);
     assert!(!e.to_string().contains("dummy_secret"), "{e}");
     assert!(server.seen.lock().unwrap().is_empty());
+}
+
+/// An expired access token is renewed once with the refresh token, the new
+/// pair is stored, and the read goes out with the new access token.
+#[test]
+fn an_expired_token_is_refreshed_once_and_the_new_pair_stored() {
+    let server = serve(routes_refreshing(200));
+    let env = env_in(&server, &vault("refresh"), token(EXPIRED), Some("dummy-refresh"));
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = site
+        .api(&api_path("/api/Members/{memberId}/MemberAccount/Member?ivfCenterId={ivfCenterId}").unwrap())
+        .unwrap();
+    assert_eq!(a.status, 200);
+
+    let seen = server.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0].target, "/api/Auth/RefreshToken");
+    assert_eq!(seen[0].token.as_deref(), Some("Bearer dummy-refresh"));
+    assert_eq!(seen[0].center.as_deref(), Some("7"));
+    assert_eq!(seen[0].authorization, None);
+    assert_eq!(seen[1].target, "/api/Members/4242/MemberAccount/Member?ivfCenterId=7");
+    assert_eq!(seen[1].token, Some(format!("Bearer {}", token(RENEWED))));
+
+    let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+    assert_eq!(stored.access_token.expose(), token(RENEWED));
+    assert_eq!(
+        stored.refresh_token.as_ref().map(|r| r.expose()),
+        Some("dummy-refresh-2")
+    );
+    assert_eq!(stored.clinic.to_string(), "exampleclinic");
+
+    // The stored token is good now: the next open sends no refresh.
+    let site = Site::open(&env, &adult1()).unwrap();
+    drop(site);
+    assert_eq!(server.seen.lock().unwrap().len(), 2);
+}
+
+/// A token that expires within the margin is renewed before the read.
+#[test]
+fn a_token_about_to_expire_is_refreshed() {
+    let server = serve(routes_refreshing(200));
+    let soon = embryooptions::portal::now_unix() + embryooptions::portal::REFRESH_MARGIN / 2;
+    let env = env_in(&server, &vault("soon"), token(soon), Some("dummy-refresh"));
+    Site::open(&env, &adult1()).unwrap();
+    let seen = server.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].target, "/api/Auth/RefreshToken");
+}
+
+/// A refresh the API refuses (401 or 403) is exit 3 naming the sign-in,
+/// and leaves the stored session as it was.
+#[test]
+fn a_refused_refresh_is_exit_3_naming_the_sign_in() {
+    for status in [401, 403] {
+        let server = serve(routes_refreshing(status));
+        let env = env_in(
+            &server,
+            &vault(&format!("refused-{status}")),
+            token(EXPIRED),
+            Some("dummy-refresh"),
+        );
+        let e = Site::open(&env, &adult1()).err().unwrap();
+        assert_eq!(e.exit_code(), 3, "{status}: {e}");
+        assert!(e.to_string().contains("GET /api/Auth/RefreshToken"), "{e}");
+        assert!(e.to_string().contains(&format!("HTTP {status}")), "{e}");
+        assert!(!e.to_string().contains("dummy-refresh"), "{e}");
+        assert!(
+            e.remedy()
+                .unwrap()
+                .contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
+            "{e}"
+        );
+        let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+        assert_eq!(stored.access_token.expose(), token(EXPIRED));
+        assert_eq!(server.seen.lock().unwrap().len(), 1);
+    }
+}
+
+/// A refresh answered with a token that has expired too is exit 3, saying so.
+#[test]
+fn a_refresh_answering_an_expired_token_is_exit_3() {
+    let mut routes = routes();
+    routes.insert(
+        "/api/Auth/RefreshToken".into(),
+        (
+            200,
+            "application/json",
+            json!({ "accessToken": token(EXPIRED + 600), "refreshToken": "dummy-refresh-2" }).to_string(),
+        ),
+    );
+    let server = serve(routes);
+    let env = env_in(&server, &vault("stale-pair"), token(EXPIRED), Some("dummy-refresh"));
+    let e = Site::open(&env, &adult1()).err().unwrap();
+    assert_eq!(e.exit_code(), 3, "{e}");
+    assert!(
+        e.to_string().contains("renewed it with a token that had expired too"),
+        "{e}"
+    );
+}
+
+/// A refresh that answers something other than a token pair is exit 5.
+#[test]
+fn a_refresh_without_a_pair_is_exit_5() {
+    let mut routes = routes();
+    routes.insert(
+        "/api/Auth/RefreshToken".into(),
+        (200, "application/json", r#"{"message":"ok"}"#.into()),
+    );
+    let server = serve(routes);
+    let env = env_in(&server, &vault("no-pair"), token(EXPIRED), Some("dummy-refresh"));
+    let e = Site::open(&env, &adult1()).err().unwrap();
+    assert_eq!(e.exit_code(), 5, "{e}");
+}
+
+/// A sign-in stored while the refresh was under way is not overwritten by
+/// the renewed pair.
+#[test]
+fn a_sign_in_stored_meanwhile_is_not_overwritten() {
+    let shared = vault("meanwhile");
+    let other = SessionStore::with_vault(Vault::new(shared.0.clone(), shared.1.clone()));
+    let hook: Hook = Box::new(move |target: &str| {
+        if target == "/api/Auth/RefreshToken" {
+            other
+                .put(&adult1(), &session(token(LATER), Some("dummy-refresh-signed-in")))
+                .unwrap();
+        }
+    });
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &shared, token(EXPIRED), Some("dummy-refresh"));
+    // This command reads with the pair it renewed...
+    Site::open(&env, &adult1()).unwrap();
+    // ...and the sign-in made meanwhile stays stored.
+    let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+    assert_eq!(stored.access_token.expose(), token(LATER));
+    assert_eq!(
+        stored.refresh_token.as_ref().map(|r| r.expose()),
+        Some("dummy-refresh-signed-in")
+    );
 }
 
 #[test]

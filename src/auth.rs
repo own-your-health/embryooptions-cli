@@ -113,7 +113,7 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
         // Even under -q: the session is stored with nothing to show it works.
         eprintln!(
             "warning: the session was stored unverified (--no-verify): no Embryo Options read checked it. \
-             `{BIN} auth login --browser --profile {profile} --overwrite` replaces it"
+             `{BIN} auth login --browser --clinic {clinic} --profile {profile} --overwrite` replaces it"
         );
     }
     if json {
@@ -148,7 +148,9 @@ fn browser_session(
         .url(clinic.start_url())
         .profile_name(profile.as_str())
         .fresh_profile(scratch)
-        .login_hint(format!("{BIN} auth login --browser --profile {profile}"))
+        .login_hint(format!(
+            "{BIN} auth login --browser --clinic {clinic} --profile {profile}"
+        ))
         .quiet(quiet);
     let captured = pk_cli_browser::capture(launch, &site::capture(clinic, verify)?, pk_cli_browser::DEFAULT_TIMEOUT)
         .map_err(|e| match e {

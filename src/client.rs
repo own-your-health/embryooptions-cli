@@ -3,7 +3,9 @@
 //!
 //! - Every read is a `GET` on the member API the clinic's web app calls,
 //!   [`BASE`], under `/api/Members/{memberId}/`, the signed-in member's own.
-//! - A request carries `Authorization: Bearer` with the access token, and
+//! - A request carries the access token as `X-XSRF-TOKEN: Bearer <token>`
+//!   and the clinic's id as `IvfCenterId`, as the web app sends them (it
+//!   sends no `Authorization` header, and the API answers one with 401), and
 //!   the browser's user agent captured with it.
 //! - It follows no redirect and is bounded in time: 30 s for the whole
 //!   answer, 10 s to connect.
@@ -23,13 +25,37 @@ use std::time::{Duration, Instant};
 
 use pk_cli_config::profile::ProfileName;
 use pk_cli_core::{CliError, Reason};
-use reqwest::header::{HeaderMap, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
+use pk_cli_secrets::Secret;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT, CONTENT_TYPE, RETRY_AFTER, USER_AGENT};
 
 use crate::cli::BIN;
 use crate::session::Session;
+use crate::site::Clinic;
 use crate::token::Claims;
 
-/// The member API's origin (the web app's `VITE_APP_API_URL`, *bundle*).
+/// The header the web app sends the access token in, as `Bearer <token>`
+/// (observed 2026-11-22; the API answers `Authorization` with 401).
+pub const TOKEN_HEADER: HeaderName = HeaderName::from_static("x-xsrf-token");
+/// The header the web app sends the clinic's id in, beside the token.
+pub const CENTER_HEADER: HeaderName = HeaderName::from_static("ivfcenterid");
+
+/// The token and clinic headers for `access_token`: the clinic's id from
+/// its claims, when it has one.
+pub fn token_headers(access_token: &str) -> Result<HeaderMap, CliError> {
+    let mut headers = HeaderMap::new();
+    let mut bearer = HeaderValue::from_str(&format!("Bearer {access_token}"))
+        .map_err(|_| CliError::Other("the access token is not a valid HTTP header value".into()))?;
+    bearer.set_sensitive(true);
+    headers.insert(TOKEN_HEADER, bearer);
+    if let Some(center) = crate::token::claims(access_token).ok().and_then(|c| c.ivf_center_id) {
+        if let Ok(v) = HeaderValue::from_str(&center) {
+            headers.insert(CENTER_HEADER, v);
+        }
+    }
+    Ok(headers)
+}
+
+/// The member API's origin (the web app's `VITE_APP_API_URL`).
 pub const BASE: &str = "https://member-api.prod.embryooptions.com";
 /// Points the reads at a test's loopback server instead of [`BASE`]
 /// ([`base`]).
@@ -91,10 +117,10 @@ pub fn base_from(value: Option<&str>, test_store: bool) -> Result<String, CliErr
 pub struct Client {
     http: reqwest::blocking::Client,
     base: String,
-    bearer: HeaderValue,
     pace: Duration,
     last: Cell<Option<Instant>>,
     profile: ProfileName,
+    clinic: Clinic,
 }
 
 impl Client {
@@ -105,15 +131,12 @@ impl Client {
             .user_agent
             .clone()
             .unwrap_or_else(|| format!("{BIN}/{}", env!("CARGO_PKG_VERSION")));
-        let mut headers = HeaderMap::new();
+        let mut headers = token_headers(session.access_token.expose())?;
         headers.insert(
             USER_AGENT,
             HeaderValue::from_str(&agent)
                 .map_err(|_| CliError::Other("the stored user agent is not a valid HTTP header value".into()))?,
         );
-        let mut bearer = HeaderValue::from_str(&format!("Bearer {}", session.access_token.expose()))
-            .map_err(|_| CliError::Other("the stored access token is not a valid HTTP header value".into()))?;
-        bearer.set_sensitive(true);
         let http = reqwest::blocking::Client::builder()
             .default_headers(headers)
             .redirect(reqwest::redirect::Policy::none())
@@ -124,10 +147,10 @@ impl Client {
         Ok(Client {
             http,
             base: base.trim_end_matches('/').to_string(),
-            bearer,
             pace,
             last: Cell::new(None),
             profile: profile.clone(),
+            clinic: session.clinic.clone(),
         })
     }
 
@@ -135,7 +158,7 @@ impl Client {
     /// came, after [`refuse`].
     pub fn api(&self, read: &Resolved) -> Result<Answer, CliError> {
         let answer = self.get(read, "application/json")?;
-        refuse(&answer, &self.profile)?;
+        refuse(&answer, &self.profile, &self.clinic)?;
         Ok(answer)
     }
 
@@ -151,7 +174,6 @@ impl Client {
             .http
             .get(format!("{}{}", self.base, read.path))
             .header(ACCEPT, accept)
-            .header(AUTHORIZATION, self.bearer.clone())
             .send();
         let answer = match result {
             Ok(a) => a,
@@ -397,30 +419,105 @@ pub struct Answer {
     pub body: Vec<u8>,
 }
 
-/// The sign-in that replaces a refused or expired session; the clinic is
-/// the stored session's.
-pub fn login_remedy(profile: &ProfileName) -> String {
-    format!("{BIN} auth login --browser --profile {profile} --overwrite")
+/// The web app's token refresh: `GET /api/Auth/RefreshToken` with the
+/// refresh token as `X-XSRF-TOKEN: Bearer <refresh token>` (the bundle's
+/// `updateToken`, observed 2026-11-22). The answer is a new pair,
+/// `{"accessToken", "refreshToken"}`. A 401 or 403 is a sign-in that can no
+/// longer be renewed (exit 3).
+pub const REFRESH: &str = "/api/Auth/RefreshToken";
+
+/// One token refresh of `session` against `base`, as [`REFRESH`] says.
+pub fn refresh(base: &str, session: &Session, profile: &ProfileName) -> Result<crate::token::Tokens, CliError> {
+    let what = format!("GET {REFRESH}");
+    let Some(refresh) = &session.refresh_token else {
+        return Err(refused_session(
+            &what,
+            "no refresh token was stored with the sign-in",
+            profile,
+            &session.clinic,
+        ));
+    };
+    let mut headers = token_headers(refresh.expose())?;
+    if let Some(center) = session.claims().ok().and_then(|c| c.ivf_center_id) {
+        if let Ok(v) = HeaderValue::from_str(&center) {
+            headers.insert(CENTER_HEADER, v);
+        }
+    }
+    let agent = session
+        .user_agent
+        .clone()
+        .unwrap_or_else(|| format!("{BIN}/{}", env!("CARGO_PKG_VERSION")));
+    let http = reqwest::blocking::Client::builder()
+        .user_agent(agent)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(TIMEOUT)
+        .connect_timeout(CONNECT_TIMEOUT)
+        .build()
+        .map_err(|e| CliError::Other(format!("building the HTTP client: {}", e.without_url())))?;
+    let answer = http
+        .get(format!("{}{REFRESH}", base.trim_end_matches('/')))
+        .headers(headers)
+        .header(ACCEPT, "application/json")
+        .send()
+        .map_err(|e| {
+            if e.is_timeout() {
+                CliError::Upstream(format!("{what} timed out after {} s", TIMEOUT.as_secs()))
+            } else {
+                CliError::Upstream(format!("{what} got no answer"))
+            }
+        })?;
+    let status = answer.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err(refused_session(
+            &what,
+            &format!("HTTP {status}: the refresh token is no longer accepted"),
+            profile,
+            &session.clinic,
+        ));
+    }
+    if !(200..300).contains(&status) {
+        return Err(CliError::Upstream(format!(
+            "Embryo Options answered {what} with HTTP {status}"
+        )));
+    }
+    let mut body = Vec::new();
+    answer
+        .take(64 * 1024)
+        .read_to_end(&mut body)
+        .map_err(|_| CliError::Upstream(format!("{what} answered HTTP {status} and its body did not arrive")))?;
+    let tokens =
+        crate::token::tokens_from(&Secret::new(String::from_utf8_lossy(&body).into_owned())).map_err(|_| {
+            CliError::Upstream(format!(
+                "{what} answered without a new token pair; the site may have changed"
+            ))
+        })?;
+    Ok(tokens)
 }
 
-fn refused_session(what: &str, said: &str, profile: &ProfileName) -> CliError {
+/// The sign-in that replaces a refused or expired session, at the stored
+/// session's clinic.
+pub fn login_remedy(profile: &ProfileName, clinic: &Clinic) -> String {
+    format!("{BIN} auth login --browser --clinic {clinic} --profile {profile} --overwrite")
+}
+
+fn refused_session(what: &str, said: &str, profile: &ProfileName, clinic: &Clinic) -> CliError {
     CliError::Auth(format!(
         "Embryo Options refused profile `{profile}`'s access token ({what}: {said}): it has signed out or expired"
     ))
     .because(Reason::CredentialRefused)
-    .with_remedy(login_remedy(profile))
+    .with_remedy(login_remedy(profile, clinic))
 }
 
 /// The answers that are no data whatever the read: a refused token, a
 /// path the API does not have, the edge's page, too many requests, the
 /// API's own failures.
-pub fn refuse(a: &Answer, profile: &ProfileName) -> Result<(), CliError> {
+pub fn refuse(a: &Answer, profile: &ProfileName, clinic: &Clinic) -> Result<(), CliError> {
     let what = &a.what;
     let status = a.status;
     let html = a.content_type.as_deref().is_some_and(|t| t.contains("html"));
     match status {
         200..=299 => Ok(()),
-        401 => Err(refused_session(what, "HTTP 401", profile)),
+        401 => Err(refused_session(what, "HTTP 401", profile, clinic)),
         300..=399 => Err(CliError::Upstream(format!(
             "Embryo Options answered {what} with a redirect (HTTP {status}); the API may have changed"
         ))),
@@ -430,7 +527,7 @@ pub fn refuse(a: &Answer, profile: &ProfileName) -> Result<(), CliError> {
         .because(Reason::ClientBlocked)
         .with_remedy(format!(
             "sign in again with `{}`, which keeps the browser's user agent",
-            login_remedy(profile)
+            login_remedy(profile, clinic)
         ))),
         403 => Err(CliError::Upstream(format!("Embryo Options refused {what} (HTTP 403)")).because(Reason::Forbidden)),
         404 => Err(CliError::NotFound(format!("Embryo Options has no {what} (HTTP 404)"))),
@@ -463,6 +560,10 @@ mod tests {
 
     fn adult1() -> ProfileName {
         ProfileName::parse("adult1").unwrap()
+    }
+
+    fn example() -> Clinic {
+        Clinic::parse("exampleclinic").unwrap()
     }
 
     #[test]
@@ -510,7 +611,7 @@ mod tests {
 
     #[test]
     fn refuse_turns_what_is_no_data_into_errors() {
-        assert!(refuse(&answer(200, "application/json"), &adult1()).is_ok());
+        assert!(refuse(&answer(200, "application/json"), &adult1(), &example()).is_ok());
         for (status, mime, exit) in [
             (401, "application/json", 3),
             (302, "text/html", 5),
@@ -521,13 +622,15 @@ mod tests {
             (503, "text/html", 5),
             (400, "application/json", 5),
         ] {
-            let e = refuse(&answer(status, mime), &adult1()).err().unwrap();
+            let e = refuse(&answer(status, mime), &adult1(), &example()).err().unwrap();
             assert_eq!(e.exit_code(), exit, "{status}: {e}");
         }
-        let e = refuse(&answer(401, "application/json"), &adult1()).err().unwrap();
+        let e = refuse(&answer(401, "application/json"), &adult1(), &example())
+            .err()
+            .unwrap();
         assert!(
             e.to_string()
-                .contains("auth login --browser --profile adult1 --overwrite"),
+                .contains("auth login --browser --clinic exampleclinic --profile adult1 --overwrite"),
             "{e}"
         );
     }

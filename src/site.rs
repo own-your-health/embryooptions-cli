@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use pk_cli_browser::{BrowserError, Capture, Captured, Confirm, HostRule};
 use pk_cli_core::CliError;
-use reqwest::header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{ACCEPT, CONTENT_TYPE};
 
 use crate::cli::BIN;
 use crate::token::{Claims, Tokens};
@@ -218,15 +218,13 @@ fn confirm_at(url: &str, access_token: &str, user_agent: Option<&str>) -> Confir
         Ok(client) => client,
         Err(e) => return Confirm::Fail(e),
     };
-    let Ok(mut bearer) = HeaderValue::from_str(&format!("Bearer {access_token}")) else {
-        return Confirm::Fail(CliError::Other(
-            "the access token is not a valid HTTP header value".into(),
-        ));
+    let headers = match crate::client::token_headers(access_token) {
+        Ok(headers) => headers,
+        Err(e) => return Confirm::Fail(e),
     };
-    bearer.set_sensitive(true);
     let answer = match client
         .get(url)
-        .header(AUTHORIZATION, bearer)
+        .headers(headers)
         .header(ACCEPT, "application/json")
         .send()
     {
@@ -425,12 +423,12 @@ mod tests {
         (base, handle)
     }
 
-    /// The read: the member's own account with the bearer token and the
+    /// The read: the member's own account with the token headers and the
     /// browser's user agent, no redirect followed; what cannot decide is
     /// `Undecided` (with the provider's `Retry-After`), and a reason never
     /// names the member or the query.
     #[test]
-    fn the_confirm_read_sends_the_bearer_to_the_members_account() {
+    fn the_confirm_read_sends_the_token_headers_to_the_members_account() {
         let token = signed_in_token();
         let (base, server) =
             serve_once("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}");
@@ -444,7 +442,9 @@ mod tests {
             "{head}"
         );
         let lower = head.to_lowercase();
-        assert!(lower.contains(&format!("\r\nauthorization: bearer {}\r\n", token.to_lowercase())));
+        assert!(lower.contains(&format!("\r\nx-xsrf-token: bearer {}\r\n", token.to_lowercase())));
+        assert!(lower.contains("\r\nivfcenterid: 7\r\n"), "{lower}");
+        assert!(!lower.contains("\r\nauthorization:"), "{lower}");
         assert!(lower.contains("\r\nuser-agent: mozilla/5.0 (test)\r\n"), "{head}");
         assert!(lower.contains("\r\naccept: application/json\r\n"), "{head}");
 

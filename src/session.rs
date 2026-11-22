@@ -42,7 +42,10 @@ pub const KEYCHAIN_SERVICE_ENV: &str = "EMBRYOOPTIONS_KEYCHAIN_SERVICE";
 pub struct Session {
     pub clinic: Clinic,
     pub access_token: Secret,
-    /// Kept for the token refresh, which is not built yet (docs/api.md).
+    /// Renews the access token, which lasts about 10 minutes:
+    /// `client::refresh` sends it as `X-XSRF-TOKEN: Bearer <refresh token>`
+    /// to `/api/Auth/RefreshToken`, and `portal::Site::open` stores the new
+    /// pair it answers (docs/api.md). How long it lasts is not known yet.
     pub refresh_token: Option<Secret>,
     pub user_agent: Option<String>,
     /// RFC 3339, UTC.
