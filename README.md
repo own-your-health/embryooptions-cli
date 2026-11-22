@@ -9,7 +9,7 @@ eggs, sperm or testicular tissue frozen. It signs in as you, at your
 clinic's Embryo Options web app, reads what that app shows you, and prints
 it. The bill commands will also write it as FHIR R4 for a personal
 medical-records store (`records-stream/v1`, the `health-records/v1` profile
-of [medical-common](https://github.com/piekstra/medical-common), read by
+of [medical-common](https://github.com/own-your-health/medical-common), read by
 `medrec import --from embryooptions`). It never pays, stores or changes a
 payment method, chooses or changes a disposition, or signs a consent.
 
@@ -33,7 +33,7 @@ you are signed in (`docs/api.md`).
 ## Install
 
 ```sh
-cargo install --git https://github.com/piekstra/embryooptions-cli --locked
+cargo install --git https://github.com/own-your-health/embryooptions-cli --locked
 # or download a release, embryooptions-<target>.tar.gz (macOS Apple Silicon or
 # Intel, Linux x86_64), put `embryooptions` on your PATH; later: embryooptions self-update
 ```
