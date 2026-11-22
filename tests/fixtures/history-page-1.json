@@ -1,0 +1,57 @@
+{
+  "total": 8,
+  "data": [
+    {
+      "id": 501,
+      "memberId": 4242,
+      "memberPaymentTypeId": "AnnualStorageFee",
+      "timestamp": "2026-01-02T08:00:00",
+      "amount": 600.00,
+      "outstandingBalance": 600.00,
+      "billingCycleStartDate": "2026-01-01T00:00:00",
+      "billingCycleEndDate": "2026-12-31T00:00:00",
+      "recurringFeeName": "Annual embryo storage",
+      "oneTimeFeeName": null,
+      "billingNote": "Storage, year 7",
+      "memberFreezeEventId": 31,
+      "memberFreezeEvent": { "id": 31, "freezeDate": "2020-05-01T00:00:00" },
+      "ivfCenterProvider": { "id": 3, "fullName": "Dr. Example Provider" },
+      "ivfCenterLab": { "id": 2, "name": "Example Lab", "taxId": "00-0000001" },
+      "cptcode1": "89342",
+      "cptcode2": null,
+      "cptcode3": null,
+      "allocationDiscountAmount": 0.00,
+      "memberPaymentMethodId": null
+    },
+    {
+      "id": 502,
+      "memberId": 4242,
+      "memberPaymentTypeId": "AutomatedPayment",
+      "timestamp": "2025-01-03T09:30:00",
+      "amount": -600.00,
+      "billingNote": null,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": {
+        "type": "Credit Card",
+        "creditCardDetails": { "cardType": "Visa", "maskedNumber": "************1111" }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionAuthReference": "dummy-auth-ref",
+      "transactionStatus": "settled"
+    },
+    {
+      "id": 503,
+      "memberId": 4242,
+      "memberPaymentTypeId": "AnnualStorageFee",
+      "timestamp": "2025-01-02T08:00:00",
+      "amount": 600.00,
+      "outstandingBalance": 0.00,
+      "billingCycleStartDate": "2025-01-01T00:00:00",
+      "billingCycleEndDate": "2025-12-31T00:00:00",
+      "recurringFeeName": "Annual embryo storage",
+      "memberFreezeEvent": { "id": 31, "freezeDate": "2020-05-01T00:00:00" },
+      "ivfCenterProvider": { "id": 3, "fullName": "Dr. Example Provider" },
+      "cptcode1": "89342"
+    }
+  ]
+}

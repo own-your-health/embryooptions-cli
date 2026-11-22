@@ -1,7 +1,8 @@
 # The FHIR embryooptions writes
 
-Not built yet: `records export` comes once the signed-in API is observed
-(`docs/api.md`). This is the mapping it will use.
+`records export` is built on the reading of the web app's code
+(`docs/api.md`, *bundle*) and tested against synthetic answers; what a
+signed-in read must still confirm is in `docs/api.md`, Not yet observed.
 
 `records export --ndjson` writes `records-stream/v1` (medical-common's
 `health-records/v1` profile) with `method: portal`: what the API answers,
@@ -41,12 +42,50 @@ person, date of service, provider and billed amount.
 
 ## From Embryo Options
 
-What the app shows (*bundle*, `docs/api.md`), and where it is expected to
-go. It is checked against real answers before it is built.
+What `records export` writes from the member API (`src/readers.rs`,
+`src/reads.rs`). Every answer is read before the stream's header, so a
+refused session, an answer it cannot read, or a billing history whose
+pages hold fewer rows than its `total`, is the command's error and
+nothing is written.
 
-| The app shows | Expected in the model |
+| The API shows | In the stream |
 |---|---|
-| The account page: Service Plan, Unpaid Balance | `Account` (`balance`, `patient_balance`); the model has no field for the service plan yet |
-| A billing history row of a charge (storage fee): Date, Amount, Note, Ref, Freeze Date, Lab, Provider, Tax ID, CPT Codes | a `Bill` of one `Charge`: `date` the row's date, `code` the CPT code, `description` the note, `rendering` the provider; the freeze date in the description |
-| A billing history row of a payment: Date, Method, Amount, Ref | a `Payment`: `number` the reference, `method` the method |
-| Next Scheduled Payment, Payment Method | not exported: they describe the payment set-up, not a bill |
+| The clinic | `Organization` `org-<clinic>` (the subdomain), named by `MemberIvfCenter`'s `name`, else the account's `ivfCenterName`, else the subdomain |
+| The member | `Patient` `patient-<clinic>-<hash>`: the clinic, the profile and the token's member id hashed (FNV-1a), so it holds across sign-ins and never shows the member id. `managingOrganization` the clinic |
+| The member's account (`MemberAccount/Member`) | one `Account`: `identifier` the account's `id`, `status` `active`, `owner` the clinic. Its `billingBalance` is not written (R4's Account has no balance): it is the sum of the open Invoices' `totalNet` |
+| A charge in the billing history | an `Invoice` `bill-<account>-<row id>`: `date` the day it was posted (`timestamp`); `type.text` the fee's name, else the note, else the type, with the freeze date it is for (`Annual embryo storage (freeze date 2020-05-01)`); `participant` the clinic's provider; `status` `issued` while `outstandingBalance` is above 0, `balanced` at 0, `cancelled` when voided; `totalPriceComponent` `base` `billed` the row's `amount`, `informational` `patient-responsibility` its `outstandingBalance`; `totalNet` and `totalGross` the `outstandingBalance` |
+| Its date of service and code | a charge naming a CPT or HCPCS code (`cptcode1`) is one `ChargeItem` line with that code, dated by the billing period's start. One naming none is a bill without lines: its one line holds the period, `occurrencePeriod` from the period's start to its end (or `occurrenceDateTime` when there is no period, the posting day) |
+| A settled payment | a `PaymentReconciliation` `payment-<row id>`: `paymentDate` the day posted, `paymentAmount` the amount (positive), `paymentIdentifier` the row's id, `disposition` `Paid by <method>` (`Visa`, `PayPal`, `Check`). The history does not say which bills a payment paid, so its one `detail` names the clinic as payee |
+
+The stream leaves out, each counted in one skip of type
+`PaymentReconciliation`, so no skip is an `Invoice`'s and a records store
+can still tell a bill the site no longer lists (DESIGN §1.10):
+
+| Left out | Skip code |
+|---|---|
+| payments whose card the processor turned down, or whose status says failed, voided or returned | `not_settled` |
+| payments without an id, a date or an amount | `unreadable` |
+| refunds, discounts and credits: the bill mapping has no resource for them | `unsupported` |
+| rows that move no money (a dispute opened, a balance carried forward) or name no type | `unsupported` |
+
+A charge without a date or an amount is a skip of its `Invoice`
+(`unreadable`), and so are charges without an id, in one skip: a bill
+that could not be read.
+
+Not exported: the upcoming bill (`UpComingBills`), the service plans and
+next scheduled payments (`FreezeEvents`) and the payment method: they
+describe what will be billed or how, not a bill. `accounts list` shows the
+upcoming bill.
+
+A clinic whose `merchantAccountDetails.currencyCode` is not `USD` is exit
+5 before the stream: the profile's `Money` is US dollars only.
+`accounts list`, `bills list` and `payments list` show its amounts as it
+bills them, with the currency.
+
+`records export` warns on stderr when the open charges'
+`outstandingBalance` does not add up to the account's `billingBalance`: a
+sign that `outstandingBalance` is not what is owed on each charge, which
+the API has not yet been seen to confirm.
+
+There are no `DocumentReference`s: Embryo Options serves no statement or
+receipt files (`docs/api.md`).

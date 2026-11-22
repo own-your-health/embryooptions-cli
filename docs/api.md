@@ -19,7 +19,10 @@ and its `/env.js`, its JavaScript and its Terms of Use were read. On
 app sends, the account read, the token's lifetime and the token refresh
 were seen. What was seen is marked *observed*. The rest comes from the
 JavaScript alone, the code every visitor's browser downloads, and has not
-been seen answering; it is marked *bundle*.
+been seen answering; it is marked *bundle*. The readers (`accounts`,
+`bills`, `payments`, `records export`) are built on that reading and tested
+against synthetic answers of the same shape; [Not yet
+observed](#not-yet-observed) lists what a signed-in read must confirm.
 
 ## Where it is
 
@@ -174,21 +177,151 @@ How long a refresh token lasts is not known yet.
 
 Every path below is a `GET` with the [headers](#the-headers) above.
 `MemberAccount/Member` has been seen answering a JSON object (*observed*);
-its fields are not mapped here yet. The others have not been seen
-answering (*bundle*).
+the others have not been seen answering (*bundle*).
 
 | Path | What the app shows with it |
 |---|---|
 | `/api/Members/{memberId}/MemberAccount/Member?ivfCenterId={ivfCenterId}` | the account page: Service Plan, Next Scheduled Payment, Payment Method, Unpaid Balance |
 | `/api/Members/{memberId}/MemberAccount/MemberPaymentHistoryAll` | the billing history and its print page: Date, Type, Method, Amount, Note, Ref, Freeze Date, Lab, Provider, Tax ID, CPT Codes |
 | `/api/Members/{memberId}/Member/UpComingBills` | the next bill and its freeze date, on the home page of a member with embryos in storage |
-| `/api/Members/{memberId}/FreezeEvents/FreezeEvents` | the specimens in storage, by freeze event |
-| `/api/Members/{memberId}/MemberIvfCenter` | the member's clinic |
+| `/api/Members/{memberId}/FreezeEvents/FreezeEvents` | the specimens in storage, by freeze event, with each one's service plan and next payment |
+| `/api/Members/{memberId}/MemberIvfCenter` | the member's clinic: its name, billing address and the currency it bills in |
 | `/api/Members/{memberId}/MemberIvfCenter/CollectionSites` | the clinic's collection sites |
 
-No statement PDF and no receipt appear in the app. The billing history's
-print page is the app's own rendering of `MemberPaymentHistoryAll`
-(*bundle*).
+### The answers (*bundle*)
+
+- `MemberAccount/Member` (*observed* keys) holds the account's `id`,
+  `billingBalance` (the app's Unpaid Balance; it offers a payment when it is
+  above 0), `adminFeeBalance`, `ivfCenterId` and `ivfCenterName`, with the
+  member's own profile (names, address, user name, payment method) beside
+  them.
+- `MemberPaymentHistoryAll` takes `pageNumber` (from 1), `pageSize` (the
+  app offers 10 to 50), `sortBy` and `sortDescending`, and answers
+  `{"data": [...], "total": N}`. The print page sends none of them and
+  reads `data`. A row's fields: `id`, `timestamp`, `memberPaymentTypeId`,
+  `amount`, `outstandingBalance`, `billingCycleStartDate`,
+  `billingCycleEndDate`, `recurringFeeName`, `oneTimeFeeName`,
+  `discountTypeName`, `allocationDiscountAmount`, `billingNote`,
+  `memberFreezeEvent.freezeDate`, `ivfCenterProvider.fullName`,
+  `ivfCenterLab.name` and `.taxId`, `cptcode1` to `cptcode3`,
+  `memberPaymentMethodId` (`CR` a card or PayPal, any other a check),
+  `memberPaymentMethod.type` (`Credit Card`, `PayPal`) and
+  `.creditCardDetails` (`cardType`, `maskedNumber`), `memberBankAccount`,
+  `creditCardSystemStatus` (`ACC` accepted, `DEC` declined, `EXP`, `INV`,
+  `ERR`), `transactionAuthReference`, `transactionStatus` and the payment
+  processor's response codes.
+- `memberPaymentTypeId` is a word the app translates. The app's own list
+  names the payments (`MemberInitiatedPayment`, `AutomatedPayment`,
+  `ScheduledInstallmentPayment`, `CollectedPayment`,
+  `CenterInitiatedPayment`, `CenterInitiatedAdvancePayment`,
+  `DirectPaymentToCenterByCheck`, `DirectAdvancePaymentToCenterByCheck`),
+  the refunds (`RefundViaCheck`, `Reimbursement`), the discounts
+  (`Discount`, `FlatDiscount`, `CenterInitiatedDiscount`,
+  `InsuranceDiscount`), `Credit`, `MemberDisputedChargeResolutionProcessInitiated`,
+  and `PastDue`, `BalanceForward` and `Through`. It names no charge: the
+  fees' words are in a translation file not read.
+- `UpComingBills` answers one object, `{nextPaymentAmount, freezeDate,
+  nextPaymentDate}`. The app asks for it only when the token's
+  `MemberType` is `CRY` (embryos in storage), ignores a failure, and shows
+  nothing when `freezeDate` is empty.
+- `MemberIvfCenter` holds the clinic's `name`, `billingAddressHtml`,
+  `currencySymbol`, `currencyCultureInfo` and
+  `merchantAccountDetails.currencyCode`, and the file names of the letters
+  and invoices the clinic prints (`printInvoiceFileName`,
+  `standardPatientInvoiceRegisteredFileName`, ...): templates, not a
+  member's documents.
+- Amounts are in the clinic's currency, as decimals: the app formats
+  `amount` and `billingBalance` as they come, with no division by 100.
+
+### No bill or receipt files
+
+No `GET` in the app's code serves a member's statement, invoice or
+receipt. The only files a member can open are consent forms, through
+DocuSign (`Consents/{consentId}/GetRenewConsentForm`, `DocuSign/Details`),
+which `api` refuses. The billing history's print page is the app's own
+rendering of `MemberPaymentHistoryAll`. The member account's
+`documentsFolder` is not read by any page. So `documents list` is empty.
+
+## What each command reads (*bundle*)
+
+One request at a time, 750 ms apart. Every reader reads the first three
+answers, in this order, before it prints or writes anything:
+
+| Command | Reads | Fields used |
+|---|---|---|
+| every reader | `MemberAccount/Member?ivfCenterId={ivfCenterId}`, `MemberIvfCenter`, then `MemberAccount/MemberPaymentHistoryAll?pageNumber=<n>&pageSize=50` from page 1 | the account's `id`, `billingBalance`, `adminFeeBalance`, `ivfCenterName`; the clinic's `name` and `merchantAccountDetails.currencyCode`; every history row as above |
+| `patients list` | as above | the clinic's subdomain and, hashed with the profile, the token's member id: the patient id. The member id never shows |
+| `accounts list` | as above, then `Member/UpComingBills` for a `CRY` member | the account; how many charges and payments, the open charges and what they owe; the upcoming bill |
+| `bills list [--open] [--since] [--until] [--limit]` | as above | the charges: `id`, the billing period (else the day of `timestamp`), `timestamp`, `memberPaymentTypeId`, the fee's name (else the note, else the type), the freeze date, `amount`, `outstandingBalance` |
+| `bills show <ID>` | as above | one charge, with the provider, the lab and its tax id, the CPT codes, the note, the discount type and `allocationDiscountAmount` |
+| `payments list [--since] [--until] [--limit]` | as above | the payments, refunds, discounts and credits: `id`, the day of `timestamp`, the kind, the type, `amount`, the method, the note, whether it settled |
+| `records export --ndjson` | as above | all of the above (`docs/fhir.md`) |
+| `documents list\|download` | nothing | none: Embryo Options serves no bill or receipt files |
+
+How the answers are read (`src/reads.rs`):
+
+- The history is read page by page, 50 rows a page, as the app's billing
+  tab pages it. With a `total`, pages are read until they hold that many
+  rows; without one, until a page shorter than 50. A history whose pages
+  hold fewer rows than its `total` is exit 5, so no reader passes part of
+  it off as the whole. A row a later page repeats is read once, and a page
+  of nothing but rows already read is exit 5: the server is not paging. A
+  bare list is read as every row at once.
+- A row is a payment, a refund, a discount, a credit or another row by its
+  `memberPaymentTypeId`, in any case, from the app's list above. A row of
+  any other type is a charge: a fee billed. A row with no type is another
+  row.
+- An amount is a JSON number of at most two decimals. A string, an
+  exponent or a third decimal is exit 5 naming the field
+  (`MemberPaymentHistoryAll.data.amount`), never with its value. Payments,
+  refunds, discounts and credits are read as positive amounts, whatever
+  their sign.
+- A date is its first ten characters, when they are a day. .NET's empty
+  date, `0001-01-01`, is no date.
+- A charge's date of service is its billing period's start, else the day it
+  was posted (`timestamp`); its period's end is the period's.
+- `outstandingBalance` is read as what is still owed on a charge: above 0
+  is an open bill (`bills list --open`). `records export` warns when the
+  open charges' outstanding balances do not add up to the account's
+  `billingBalance`.
+- A charge is voided when its `transactionStatus` says void or cancel.
+- A payment settled unless its card was turned down (`DEC`, `EXP`, `INV`,
+  `ERR`) or its `transactionStatus` says it was declined, failed,
+  rejected, voided, expired, cancelled, returned, bounced or charged back.
+  `payments list` shows every payment with `settled`; `records export`
+  writes only the settled ones and counts the rest in one skip.
+- The method is worded as the app words it: the card's type (`Visa`),
+  `Credit Card`, `PayPal` or `Check`. The card's and the bank account's
+  digits are never read.
+- A row without an `id` cannot be placed: `records export` counts it in a
+  skip.
+
+### Not yet observed
+
+Each of these is the reading of the JavaScript alone, to check against the
+first signed-in answers:
+
+- the words `memberPaymentTypeId` takes for a charge (a storage fee, a
+  notice fee, an admin fee), and that every other word is in the app's
+  list;
+- whether `amount` and `billingBalance` are in dollars, as decimals, and
+  the sign of a payment's `amount`;
+- whether `outstandingBalance` on a charge is what is owed on that charge
+  or the account's running balance after the row, and so whether the open
+  charges add up to `billingBalance`;
+- whether `adminFeeBalance` is part of `billingBalance`;
+- whether `allocationDiscountAmount` is taken off the charge's `amount` or
+  shown beside it;
+- whether `BalanceForward` and `PastDue` are rows of the history (a balance
+  carried in from before is owed money, read here as no bill) or only
+  labels;
+- the values of `transactionStatus`, and whether a declined card payment
+  stays in the history;
+- the format of `timestamp` and of the billing period's dates;
+- whether `MemberPaymentHistoryAll` without `pageSize` answers every row,
+  and whether it caps `pageSize` below 50;
+- whether `MemberIvfCenter` answers this member type, and what
+  `UpComingBills` answers a member who is not `CRY`.
 
 ## What `api` refuses
 
@@ -246,6 +379,8 @@ never touches the reCAPTCHA check and never signs in by itself.
 ## Traps
 
 - A `GET` is no proof of a read. The API takes some actions as `GET`s:
+  `Payment/MemberPayment` (the account page's "Charge my account now",
+  which charges the stored card the unpaid balance),
   `MemberPreempt/ChargeExistingPaymentMethod` and
   `MemberPreempt/ChargeNoticeOfFee` (charging the member),
   `MemberPreempt/ZeroChargeContinue`, and the matching site's

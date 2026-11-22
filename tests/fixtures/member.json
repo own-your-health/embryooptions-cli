@@ -1,0 +1,12 @@
+{
+  "id": 1001,
+  "ivfCenterId": 7,
+  "ivfCenterName": "Example Fertility Clinic",
+  "billingBalance": 600.00,
+  "adminFeeBalance": 0.00,
+  "abandonmentCount": 0,
+  "cryptUserName": "member-one-dummy",
+  "createDate": "2020-05-01T00:00:00",
+  "documentsFolder": "dummy-folder",
+  "defaultPaymentMethodId": 11
+}

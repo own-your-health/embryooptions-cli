@@ -87,6 +87,14 @@ fn every_command_renders_help() {
         vec!["config", "path", "--help"],
         vec!["config", "show", "--help"],
         vec!["api", "--help"],
+        vec!["patients", "list", "--help"],
+        vec!["accounts", "list", "--help"],
+        vec!["bills", "list", "--help"],
+        vec!["bills", "show", "--help"],
+        vec!["payments", "list", "--help"],
+        vec!["records", "export", "--help"],
+        vec!["documents", "list", "--help"],
+        vec!["documents", "download", "--help"],
         vec!["self-update", "--help"],
         vec!["completions", "--help"],
         vec!["info", "--help"],
@@ -113,6 +121,18 @@ fn info_declares_the_profile_and_login_profiles() {
     let caps = v["capabilities"].as_array().unwrap();
     assert!(caps.iter().any(|c| c == "login-profiles"), "{caps:?}");
     assert!(!caps.iter().any(|c| c == "records-files"), "no files source: {caps:?}");
+    for c in [
+        "patients",
+        "accounts",
+        "bills",
+        "payments",
+        "records",
+        "documents",
+        "api",
+    ] {
+        assert!(caps.iter().any(|x| x == c), "{c}: {caps:?}");
+    }
+    assert_eq!(v["profiles"], serde_json::json!(["health-records/v1", "documents/v1"]));
     assert_eq!(v["auth"]["required"], true);
 }
 
@@ -140,6 +160,14 @@ fn a_login_command_needs_its_profile() {
         vec!["auth", "status"],
         vec!["auth", "logout"],
         vec!["api", "GET", "/api/Members/{memberId}/MemberAccount/Member"],
+        vec!["patients", "list"],
+        vec!["accounts", "list"],
+        vec!["bills", "list"],
+        vec!["bills", "show", "501"],
+        vec!["payments", "list"],
+        vec!["records", "export", "-o", "out"],
+        vec!["documents", "list"],
+        vec!["documents", "download", "--all", "-o", "out"],
     ] {
         let out = embryooptions().args(&args).arg("--json").assert().code(2);
         let v = json_of(&out);
@@ -426,4 +454,83 @@ fn the_base_url_override_is_for_loopback_tests_only() {
         ])
         .assert()
         .code(3);
+}
+
+/// Each reader of a signed-out profile is exit 3 naming the sign-in, before
+/// any request: nothing is stored, so nothing reads a key. The export
+/// writes nothing to stdout, where the stream would go.
+#[test]
+fn the_readers_of_a_signed_out_profile_are_exit_3() {
+    for args in [
+        vec!["patients", "list"],
+        vec!["accounts", "list"],
+        vec!["bills", "list", "--open"],
+        vec!["bills", "show", "501"],
+        vec!["payments", "list", "--since", "2025-01-01"],
+    ] {
+        let out = embryooptions()
+            .args(&args)
+            .args(["--profile", "adult1", "--json"])
+            .assert()
+            .code(3);
+        let v = json_of(&out);
+        assert_eq!(v["error"]["code"], "auth", "{args:?}");
+        assert!(v["error"].to_string().contains("--profile adult1"), "{args:?}: {v}");
+    }
+    let out = embryooptions()
+        .args(["records", "export", "--ndjson", "--profile", "adult1"])
+        .assert()
+        .code(3);
+    assert!(out.get_output().stdout.is_empty());
+}
+
+/// The readers' own checks come before the profile and the vault.
+#[test]
+fn the_readers_check_their_arguments_first() {
+    for args in [
+        vec!["bills", "list", "--since", "2026-13-01"],
+        vec!["bills", "show", " "],
+        vec!["payments", "list", "--until", "yesterday"],
+        vec!["records", "export"],
+        vec!["records", "export", "--ndjson", "--json"],
+        vec!["records", "export", "--ndjson", "--since", "June"],
+        vec!["documents", "download", "--all", "-o", "-"],
+    ] {
+        embryooptions()
+            .args(&args)
+            .args(["--profile", "adult1"])
+            .assert()
+            .code(2);
+    }
+}
+
+/// Embryo Options serves no bill or receipt files: the list is empty, an id
+/// is exit 4, and --all saves none. None sends a request or reads a session.
+#[test]
+fn documents_are_none() {
+    let out = embryooptions()
+        .args(["documents", "list", "--profile", "adult1", "--json"])
+        .assert()
+        .success();
+    let v = json_of(&out);
+    assert_eq!(v["schema"], "document-list/v1");
+    assert_eq!(v["items"], serde_json::json!([]));
+    embryooptions()
+        .args(["documents", "list", "--profile", "adult1"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("serves no statement or receipt files"));
+    let out = embryooptions()
+        .args(["documents", "download", "statement-1", "--profile", "adult1", "--json"])
+        .assert()
+        .code(4);
+    assert_eq!(json_of(&out)["error"]["code"], "not_found");
+    let dir = tmp().join("docs");
+    let out = embryooptions()
+        .args(["documents", "download", "--all", "-o"])
+        .arg(&dir)
+        .args(["--profile", "adult1", "--json"])
+        .assert()
+        .success();
+    assert_eq!(json_of(&out)["count"], 0);
 }

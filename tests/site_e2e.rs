@@ -11,14 +11,17 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use embryooptions::cli::DownloadArgs;
 use embryooptions::client::api_path;
 use embryooptions::portal::{Env, Site, Warnings};
+use embryooptions::readers;
 use embryooptions::session::{Session, SessionStore};
 use embryooptions::site::Clinic;
 use embryooptions::token::{test_token, Tokens};
 use pk_cli_auth::refresh_lock::RefreshLock;
 use pk_cli_auth::vault::{MemoryKeys, Vault};
 use pk_cli_config::profile::ProfileName;
+use pk_cli_core::RangeArgs;
 use pk_cli_secrets::Secret;
 use serde_json::json;
 
@@ -763,4 +766,580 @@ fn no_answer_names_the_server_read() {
         e.to_string().contains("GET /api/Members/{memberId}/MemberIvfCenter"),
         "{e}"
     );
+}
+
+// ------------------------------------------------------------- the readers
+
+const MEMBER_FIXTURE: &str = include_str!("fixtures/member.json");
+const CLINIC_FIXTURE: &str = include_str!("fixtures/clinic.json");
+const HISTORY_1: &str = include_str!("fixtures/history-page-1.json");
+const HISTORY_2: &str = include_str!("fixtures/history-page-2.json");
+const UPCOMING_FIXTURE: &str = include_str!("fixtures/upcoming.json");
+
+const MEMBER_AT: &str = "/api/Members/4242/MemberAccount/Member?ivfCenterId=7";
+const CLINIC_AT: &str = "/api/Members/4242/MemberIvfCenter";
+const UPCOMING_AT: &str = "/api/Members/4242/Member/UpComingBills";
+
+fn page_at(n: usize) -> String {
+    format!("/api/Members/4242/MemberAccount/MemberPaymentHistoryAll?pageNumber={n}&pageSize=50")
+}
+
+fn ok(body: &str) -> (u16, &'static str, String) {
+    (200, "application/json; charset=utf-8", body.to_string())
+}
+
+/// The member's account, the clinic and two pages of history, synthetic
+/// (tests/fixtures).
+fn reader_routes() -> Routes {
+    let mut r = Routes::new();
+    r.insert(MEMBER_AT.into(), ok(MEMBER_FIXTURE));
+    r.insert(CLINIC_AT.into(), ok(CLINIC_FIXTURE));
+    r.insert(page_at(1), ok(HISTORY_1));
+    r.insert(page_at(2), ok(HISTORY_2));
+    r.insert(UPCOMING_AT.into(), ok(UPCOMING_FIXTURE));
+    r
+}
+
+/// `routes` with `path` answering `body`.
+fn with(mut routes: Routes, path: &str, body: &str) -> Routes {
+    routes.insert(path.into(), ok(body));
+    routes
+}
+
+/// A fixture with `from` replaced by `to`, which must be in it.
+fn edited(fixture: &str, from: &str, to: &str) -> String {
+    assert!(fixture.contains(from), "{from}");
+    fixture.replace(from, to)
+}
+
+fn reader_env(server: &Server, tag: &str) -> Env {
+    env(server, tag)
+}
+
+/// A token for a member with embryos in storage (`MemberType` `CRY`).
+fn embryo_token() -> String {
+    test_token(&json!({
+        "user": json!({ "UserId": 4242, "IVFCenterId": 7, "MemberType": "CRY" }).to_string(),
+        "exp": LATER,
+    }))
+}
+
+fn ids(v: &serde_json::Value) -> Vec<String> {
+    v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn targets(server: &Server) -> Vec<String> {
+    server.seen.lock().unwrap().iter().map(|s| s.target.clone()).collect()
+}
+
+#[test]
+fn accounts_list_reads_the_account_the_clinic_and_every_page_of_history() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "accounts");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::accounts_list(&site).unwrap();
+    assert_eq!(v["schema"], "account-list/v1");
+    let a = &v["items"][0];
+    assert_eq!(a["id"], "1001");
+    assert_eq!(a["provider"], "Example Fertility Clinic");
+    assert_eq!(a["currency"], "USD");
+    assert_eq!(a["owes"].to_string(), "600.00");
+    assert_eq!(a["admin_fees"].to_string(), "0.00");
+    assert_eq!(
+        (a["bills"].as_u64(), a["open_bills"].as_u64(), a["payments"].as_u64()),
+        (Some(3), Some(1), Some(2))
+    );
+    assert_eq!(a["owed_on_bills"].to_string(), "600.00");
+    assert!(a["next_bill"].is_null(), "member type 1 is not embryos in storage");
+    // The app's own reads, in order, and nothing else: no upcoming bill
+    // for this member type.
+    assert_eq!(
+        targets(&server),
+        vec![MEMBER_AT.to_string(), CLINIC_AT.into(), page_at(1), page_at(2)]
+    );
+    let text = v.to_string();
+    for absent in ["4242", "member-one-dummy", "dummy-folder"] {
+        assert!(!text.contains(absent), "{absent}");
+    }
+}
+
+#[test]
+fn a_member_with_embryos_in_storage_sees_the_next_bill() {
+    let server = serve(reader_routes());
+    let env = env_with(&server, "upcoming", embryo_token());
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::accounts_list(&site).unwrap();
+    let next = &v["items"][0]["next_bill"];
+    assert_eq!(next["date"], "2027-01-01");
+    assert_eq!(next["amount"].to_string(), "600.00");
+    assert_eq!(next["freeze_date"], "2020-05-01");
+    assert_eq!(targets(&server).last().map(String::as_str), Some(UPCOMING_AT));
+
+    // A failure of that read is a warning, as the app ignores it; a
+    // sign-in that has ended is not.
+    let mut down = reader_routes();
+    down.insert(UPCOMING_AT.into(), (503, "text/html", "<p>down</p>".into()));
+    let server = serve(down);
+    let env = env_with(&server, "upcoming-down", embryo_token());
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::accounts_list(&site).unwrap();
+    assert!(v["items"][0]["next_bill"].is_null());
+    assert!(
+        env.warnings
+            .lines()
+            .iter()
+            .any(|l| l.contains("upcoming bill was not read")),
+        "{:?}",
+        env.warnings.lines()
+    );
+
+    let mut refused = reader_routes();
+    refused.insert(UPCOMING_AT.into(), (401, "application/json", String::new()));
+    let server = serve(refused);
+    let env = env_with(&server, "upcoming-refused", embryo_token());
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert_eq!(readers::accounts_list(&site).err().unwrap().exit_code(), 3);
+
+    // No freeze date is no upcoming bill, as the app shows it.
+    let server = serve(with(
+        reader_routes(),
+        UPCOMING_AT,
+        r#"{"nextPaymentAmount":0,"freezeDate":null}"#,
+    ));
+    let env = env_with(&server, "upcoming-none", embryo_token());
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert!(readers::accounts_list(&site).unwrap()["items"][0]["next_bill"].is_null());
+}
+
+#[test]
+fn bills_list_is_the_charges_newest_service_first() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "bills");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let all = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
+    assert_eq!(all["schema"], "bill-list/v1");
+    assert_eq!(ids(&all), ["501", "503", "506"]);
+    let b = &all["items"][0];
+    assert_eq!(
+        (b["date"].as_str(), b["end"].as_str(), b["posted"].as_str()),
+        (Some("2026-01-01"), Some("2026-12-31"), Some("2026-01-02"))
+    );
+    assert_eq!(b["description"], "Annual embryo storage");
+    assert_eq!(b["freeze_date"], "2020-05-01");
+    assert_eq!(
+        (
+            b["billed"].to_string().as_str(),
+            b["owes"].to_string().as_str(),
+            b["open"].as_bool()
+        ),
+        ("600.00", "600.00", Some(true))
+    );
+    // .NET's empty date is no period: the notice fee is dated by its posting.
+    assert_eq!(all["items"][2]["date"], "2024-12-01");
+
+    let range = |since: Option<&str>, until: Option<&str>, limit: Option<u32>| RangeArgs {
+        since: since.map(str::to_string),
+        until: until.map(str::to_string),
+        limit,
+    };
+    assert_eq!(
+        ids(&readers::bills_list(&site, true, &RangeArgs::default()).unwrap()),
+        ["501"]
+    );
+    assert_eq!(
+        ids(&readers::bills_list(&site, false, &range(Some("2025-6-1"), None, None)).unwrap()),
+        ["501"]
+    );
+    assert_eq!(
+        ids(&readers::bills_list(&site, false, &range(None, Some("2025-06-01"), None)).unwrap()),
+        ["503", "506"]
+    );
+    assert_eq!(
+        ids(&readers::bills_list(&site, false, &range(None, None, Some(1))).unwrap()),
+        ["501"]
+    );
+}
+
+#[test]
+fn bills_show_has_what_the_history_says_and_only_charges_are_bills() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "show");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::bill_show(&site, " 501 ").unwrap();
+    assert_eq!(v["schema"], "bill/v1");
+    assert_eq!(v["provider"], "Dr. Example Provider");
+    assert_eq!(v["lab"], "Example Lab");
+    assert_eq!(v["codes"], json!(["89342"]));
+    assert_eq!(v["note"], "Storage, year 7");
+    assert_eq!(v["charges"][0]["code"], "89342");
+    assert_eq!(v["charges"][0]["amount"].to_string(), "600.00");
+    for id in ["502", "9999", "505"] {
+        let e = readers::bill_show(&site, id).err().unwrap();
+        assert_eq!(e.exit_code(), 4, "{id}");
+    }
+}
+
+#[test]
+fn payments_list_tells_payments_discounts_and_failures_apart() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "payments");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
+    assert_eq!(v["schema"], "payment-list/v1");
+    assert_eq!(ids(&v), ["504", "502", "505"]);
+    let p = |i: usize| &v["items"][i];
+    assert_eq!(
+        (
+            p(0)["kind"].as_str(),
+            p(0)["method"].as_str(),
+            p(0)["settled"].as_bool()
+        ),
+        (Some("payment"), Some("PayPal"), Some(false))
+    );
+    assert_eq!(
+        (
+            p(1)["amount"].to_string().as_str(),
+            p(1)["method"].as_str(),
+            p(1)["settled"].as_bool()
+        ),
+        ("600.00", Some("Visa"), Some(true))
+    );
+    assert_eq!(
+        (p(2)["kind"].as_str(), p(2)["amount"].to_string().as_str()),
+        (Some("discount"), "25.00")
+    );
+    let text = v.to_string();
+    for absent in ["1111", "dummy-auth-ref"] {
+        assert!(!text.contains(absent), "{absent}");
+    }
+}
+
+/// The stream's lines: header, resources, trailer.
+fn stream_of(bytes: &[u8]) -> Vec<serde_json::Value> {
+    String::from_utf8(bytes.to_vec())
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
+}
+
+fn of_type<'a>(lines: &'a [serde_json::Value], t: &str) -> Vec<&'a serde_json::Value> {
+    lines.iter().filter(|l| l["resourceType"] == t).collect()
+}
+
+#[test]
+fn records_export_writes_the_account_its_bills_and_settled_payments() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "export");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    assert!(finished.trailer.complete);
+    let text = String::from_utf8(out.clone()).unwrap();
+    for absent in ["4242", "1111", "dummy-auth-ref", "member-one-dummy"] {
+        assert!(!text.contains(absent), "{absent}");
+    }
+    // Amounts keep the site's spelling.
+    assert!(text.contains(r#""value":600.00"#), "{text}");
+    let lines = stream_of(&out);
+    let header = &lines[0];
+    assert_eq!(header["schema"], "records-stream/v1");
+    assert_eq!(header["method"], "portal");
+    assert_eq!(header["organization"]["id"], "org-exampleclinic");
+    assert_eq!(header["organization"]["name"], "Example Fertility Clinic");
+    let patient = header["patient"]["id"].as_str().unwrap();
+    assert!(patient.starts_with("patient-exampleclinic-"), "{patient}");
+    let types: Vec<&str> = lines[1..lines.len() - 1]
+        .iter()
+        .map(|l| l["resourceType"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        types,
+        [
+            "Organization",
+            "Patient",
+            "Account",
+            "Invoice",
+            "Invoice",
+            "Invoice",
+            "PaymentReconciliation"
+        ]
+    );
+    let account = of_type(&lines, "Account")[0];
+    assert_eq!(account["id"], "account-1001");
+    assert_eq!(account["identifier"][0]["value"], "1001");
+
+    let invoices = of_type(&lines, "Invoice");
+    let by_id = |id: &str| {
+        *invoices
+            .iter()
+            .find(|i| i["id"] == id)
+            .unwrap_or_else(|| panic!("{id}"))
+    };
+    let open = by_id("bill-1001-501");
+    assert_eq!(open["status"], "issued");
+    assert_eq!(open["totalNet"]["value"].to_string(), "600.00");
+    assert_eq!(open["totalGross"], open["totalNet"]);
+    assert_eq!(open["account"]["reference"], "Account/account-1001");
+    assert_eq!(open["date"], "2026-01-02");
+    assert_eq!(open["type"]["text"], "Annual embryo storage (freeze date 2020-05-01)");
+    assert_eq!(open["participant"][0]["actor"]["display"], "Dr. Example Provider");
+    let charge = &open["contained"][0];
+    assert_eq!(charge["occurrenceDateTime"], "2026-01-01");
+    assert_eq!(charge["code"]["coding"][0]["system"], "http://www.ama-assn.org/go/cpt");
+    assert_eq!(charge["code"]["coding"][0]["code"], "89342");
+    let billed = open["totalPriceComponent"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["code"]["coding"][0]["code"] == "billed")
+        .unwrap();
+    assert_eq!(
+        (billed["type"].as_str(), billed["amount"]["value"].to_string().as_str()),
+        (Some("base"), "600.00")
+    );
+    assert_eq!(by_id("bill-1001-503")["status"], "balanced");
+    // A charge naming no code is one line of its own.
+    let notice = by_id("bill-1001-506");
+    assert_eq!(notice["status"], "balanced");
+    assert_eq!(notice["contained"][0]["occurrenceDateTime"], "2024-12-01");
+    assert_eq!(notice["contained"][0]["code"]["text"], "Notice fee");
+
+    let payments = of_type(&lines, "PaymentReconciliation");
+    assert_eq!(payments[0]["id"], "payment-502");
+    assert_eq!(payments[0]["paymentDate"], "2025-01-03");
+    assert_eq!(payments[0]["paymentAmount"]["value"].to_string(), "600.00");
+    assert_eq!(payments[0]["disposition"], "Paid by Visa");
+
+    let trailer = lines.last().unwrap();
+    assert_eq!(trailer["schema"], "records-stream-end/v1");
+    let skips: Vec<(String, String)> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            (
+                s["resource_type"].as_str().unwrap().to_string(),
+                s["code"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let skip = |t: &str, c: &str| (t.to_string(), c.to_string());
+    assert_eq!(
+        skips,
+        [
+            skip("PaymentReconciliation", "not_settled"),
+            skip("PaymentReconciliation", "unreadable"),
+            skip("PaymentReconciliation", "unsupported"),
+            skip("PaymentReconciliation", "unsupported"),
+        ],
+        "no skip is an Invoice's, so a store may tell a bill the site dropped"
+    );
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+}
+
+#[test]
+fn records_export_since_keeps_the_account_and_later_bills() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "since");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    readers::export(&site, &server.base, &mut out, None, None, Some("2025-6-1")).unwrap();
+    let lines = stream_of(&out);
+    assert_eq!(lines[0]["since"], "2025-06-01");
+    assert_eq!(
+        lines[0]["since_unbounded"],
+        json!(["Organization", "Patient", "Account"])
+    );
+    let invoices: Vec<&str> = of_type(&lines, "Invoice")
+        .iter()
+        .map(|i| i["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(invoices, ["bill-1001-501"]);
+    assert_eq!(of_type(&lines, "Account").len(), 1);
+    assert!(of_type(&lines, "PaymentReconciliation").is_empty());
+}
+
+#[test]
+fn records_export_takes_only_this_sign_ins_patient_and_clinic() {
+    let server = serve(reader_routes());
+    let env = reader_env(&server, "ids");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let patient = readers::patients(&site).unwrap()["items"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut out = Vec::new();
+    readers::export(
+        &site,
+        &server.base,
+        &mut out,
+        Some(&patient),
+        Some("org-exampleclinic"),
+        None,
+    )
+    .unwrap();
+    for (p, o) in [(Some("patient-other"), None), (None, Some("org-other"))] {
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, p, o, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 4, "{e}");
+        assert!(out.is_empty());
+    }
+}
+
+/// Every failure of a read comes before the header: nothing reaches the
+/// stream, and the error is the command's.
+#[test]
+fn a_history_short_of_its_total_or_unreadable_is_exit_5_before_the_stream() {
+    let short = with(reader_routes(), &page_at(2), r#"{"total": 8, "data": []}"#);
+    let three_places = with(
+        reader_routes(),
+        &page_at(1),
+        &edited(
+            HISTORY_1,
+            r#""amount": 600.00,
+      "outstandingBalance": 600.00"#,
+            r#""amount": 600.005,
+      "outstandingBalance": 600.00"#,
+        ),
+    );
+    let not_json = {
+        let mut r = reader_routes();
+        r.insert(page_at(1), (200, "text/html", "<p>maintenance</p>".into()));
+        r
+    };
+    for (tag, routes, says) in [
+        ("short", short, "counts 8 rows and its pages held 3"),
+        ("places", three_places, "MemberPaymentHistoryAll.data.amount"),
+        ("html", not_json, "with no JSON"),
+    ] {
+        let server = serve(routes);
+        let env = reader_env(&server, tag);
+        let site = Site::open(&env, &adult1()).unwrap();
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 5, "{tag}: {e}");
+        assert!(e.to_string().contains(says), "{tag}: {e}");
+        assert!(!e.to_string().contains("600.005"), "{e}");
+        assert!(out.is_empty(), "{tag}");
+    }
+}
+
+#[test]
+fn a_page_shorter_than_asked_is_read_on_to_the_total_and_a_repeat_once() {
+    // Page 2 repeats the first page's last row, as an offset page does when
+    // a row arrives between two reads; the total counts it.
+    let repeated = edited(
+        HISTORY_2,
+        r#""data": ["#,
+        r#""data": [{"id": 503, "memberPaymentTypeId": "AnnualStorageFee", "timestamp": "2025-01-02T08:00:00", "amount": 600.00, "outstandingBalance": 0.00},"#,
+    );
+    let server = serve(with(
+        reader_routes(),
+        &page_at(2),
+        &edited(&repeated, r#""total": 8"#, r#""total": 9"#),
+    ));
+    let env = reader_env(&server, "repeat");
+    let site = Site::open(&env, &adult1()).unwrap();
+    // The total, 9, is the 8 rows and the repeat: page 2 holds 6.
+    let e = readers::bills_list(&site, false, &RangeArgs::default());
+    assert_eq!(ids(&e.unwrap()), ["501", "503", "506"]);
+}
+
+/// A server that ignores `pageNumber` answers page 1 again: exit 5 at page
+/// 2, not a read on to the page cap.
+#[test]
+fn a_history_that_does_not_page_is_exit_5_at_its_second_page() {
+    let server = serve(with(reader_routes(), &page_at(2), HISTORY_1));
+    let env = reader_env(&server, "no-paging");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let e = readers::bills_list(&site, false, &RangeArgs::default()).err().unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(
+        e.to_string().contains("page 2 with the rows of the pages before it"),
+        "{e}"
+    );
+    assert_eq!(targets(&server).len(), 4);
+}
+
+#[test]
+fn a_clinic_billing_in_another_currency_lists_but_does_not_export() {
+    let server = serve(with(
+        reader_routes(),
+        CLINIC_AT,
+        &edited(CLINIC_FIXTURE, r#""USD""#, r#""cad""#),
+    ));
+    let env = reader_env(&server, "currency");
+    let site = Site::open(&env, &adult1()).unwrap();
+    assert_eq!(readers::accounts_list(&site).unwrap()["items"][0]["currency"], "CAD");
+    let mut out = Vec::new();
+    let e = readers::export(&site, &server.base, &mut out, None, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(e.to_string().contains("bills in CAD"), "{e}");
+    assert!(out.is_empty());
+}
+
+#[test]
+fn a_balance_the_open_bills_do_not_add_to_is_a_warning() {
+    let server = serve(with(
+        reader_routes(),
+        MEMBER_AT,
+        &edited(
+            MEMBER_FIXTURE,
+            r#""billingBalance": 600.00"#,
+            r#""billingBalance": 650.00"#,
+        ),
+    ));
+    let env = reader_env(&server, "balance");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    assert!(
+        readers::export(&site, &server.base, &mut out, None, None, None)
+            .unwrap()
+            .trailer
+            .complete
+    );
+    let warnings = env.warnings.lines();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("add to 600.00") && w.contains("650.00 owed")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn documents_are_none_and_send_nothing() {
+    assert!(readers::documents().is_empty());
+    let one = DownloadArgs {
+        id: Some("statement-1".into()),
+        all: false,
+        output: None,
+        overwrite: false,
+    };
+    let e = readers::download(&one).err().unwrap();
+    assert_eq!(e.exit_code(), 4);
+    assert!(e.to_string().contains("serves no statement or receipt files"), "{e}");
+    let dir = temp_dir("documents");
+    let all = DownloadArgs {
+        id: None,
+        all: true,
+        output: Some(dir.clone()),
+        overwrite: false,
+    };
+    let batch = readers::download(&all).unwrap();
+    assert_eq!(batch.count, 0);
+    assert!(dir.is_dir());
+    let _ = std::fs::remove_dir_all(dir);
 }
