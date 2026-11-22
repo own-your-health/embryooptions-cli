@@ -6,7 +6,8 @@ Not built yet: `records export` comes once the signed-in API is observed
 `records export --ndjson` writes `records-stream/v1` (medical-common's
 `health-records/v1` profile) with `method: portal`: what the API answers,
 mapped by hand to FHIR R4 in `src/bill.rs`. `src/bill.rs` is the model the
-household's billing CLIs share (the same in peryourhealth-cli and flywire-cli). Every
+household's billing CLIs share: the same file is in peryourhealth-cli and
+flywire-cli, and it needs serde_json's `arbitrary_precision`. Every
 resource carries `meta.source` `embryooptions:site` and a tag saying it was
 mapped. Ids are stable across runs, derived from the site's own numbers, so
 a records store merges the same bill pulled twice.
