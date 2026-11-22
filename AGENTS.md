@@ -30,7 +30,7 @@ wait for the API's answers to be mapped; `docs/api.md` marks what was seen
 | `src/site.rs` | `Clinic`, the sign-in's browser capture (`TOKENS_JS`) and the token check (`SESSION_CHECK`, `judge`) |
 | `src/token.rs` | the access token's claims, read locally (member id, clinic id, expiry), and what `--stdin` accepts |
 | `src/client.rs` | the reads: the token headers (`token_headers`), the token refresh (`refresh`), pacing, `refuse` (answers to exit codes), and `api_path` / `ApiPath::resolve`, which check an `api` path is the member's own read before it is sent |
-| `src/bill.rs` | the bill model (accounts, bills and their charge lines, payments, statements) and its FHIR mapping (`docs/fhir.md`); the same file as peryourhealth-cli's |
+| `src/bill.rs` | the bill model (accounts, bills and their charge lines, payments, statements, receipts) and its FHIR mapping (`docs/fhir.md`). The same file is in flywire-cli, peryourhealth-cli and embryooptions-cli, differing only in the CLI's name in two doc comments: a change to it is made in all three. It needs serde_json's `arbitrary_precision` (Cargo.toml) to keep money's decimal spelling; its unit test fails without it |
 | `src/portal.rs` | the signed-in commands (`Env`: where sessions are kept and which API is read; `Site`, which renews a token due to expire and refuses one it cannot renew before a request) |
 | `docs/api.md` | the site as observed or read from its code, and the traps |
 
