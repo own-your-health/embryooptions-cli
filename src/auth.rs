@@ -93,6 +93,8 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
             )))
         }
     };
+    // A stuck lock fails here, before anyone signs in (`store.put_signin`).
+    store.before_signin()?;
     let session = match manual {
         false => browser_session(profile, &clinic, browser.fresh_profile, verify, quiet)?,
         true => manual_session(
@@ -104,7 +106,7 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
             |tokens, agent| site::confirm_tokens_at(&base, tokens, agent),
         )?,
     };
-    store.put(profile, &session)?;
+    store.put_signin(profile, &session)?;
     if verify {
         if !quiet {
             eprintln!("Embryo Options session at {clinic} stored for profile `{profile}`");
@@ -113,7 +115,7 @@ pub fn login(cmd: &LoginCmd, profile: &ProfileName, json: bool, quiet: bool) -> 
         // Even under -q: the session is stored with nothing to show it works.
         eprintln!(
             "warning: the session was stored unverified (--no-verify): no Embryo Options read checked it. \
-             `{BIN} auth login --browser --profile {profile} --overwrite` replaces it"
+             `{BIN} auth login --browser --clinic {clinic} --profile {profile} --overwrite` replaces it"
         );
     }
     if json {
@@ -148,7 +150,9 @@ fn browser_session(
         .url(clinic.start_url())
         .profile_name(profile.as_str())
         .fresh_profile(scratch)
-        .login_hint(format!("{BIN} auth login --browser --profile {profile}"))
+        .login_hint(format!(
+            "{BIN} auth login --browser --clinic {clinic} --profile {profile}"
+        ))
         .quiet(quiet);
     let captured = pk_cli_browser::capture(launch, &site::capture(clinic, verify)?, pk_cli_browser::DEFAULT_TIMEOUT)
         .map_err(|e| match e {
@@ -412,7 +416,7 @@ pub fn reset(force: bool, interactive: bool, json: bool, quiet: bool) -> Result<
     } else if !quiet {
         eprintln!(
             "reset: {removed} stored session(s) and the vault's key removed; sign in again with `{BIN} auth login \
-             --browser --profile <NAME>`"
+             --browser --clinic <SLUG> --profile <NAME>`"
         );
     }
     Ok(())

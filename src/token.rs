@@ -1,5 +1,5 @@
 //! The Embryo Options access token: a JWT the clinic's web app keeps in
-//! `localStorage.accessToken` and sends as `Authorization: Bearer` to the
+//! `localStorage.accessToken` and sends as `X-XSRF-TOKEN: Bearer` to the
 //! member API. embryooptions reads its claims locally, from the
 //! base64url payload, without checking the signature (the API does that):
 //! the member id the API's paths carry, the clinic's id, and when the token
@@ -14,8 +14,9 @@ use pk_cli_core::CliError;
 use pk_cli_secrets::Secret;
 use serde_json::Value;
 
-/// What a sign-in hands over: the access token, and the refresh token the
-/// web app keeps beside it (stored, not yet used: docs/api.md).
+/// What a sign-in or a token refresh hands over: the access token, and the
+/// refresh token the web app keeps beside it (`client::refresh` renews the
+/// access token with it: docs/api.md).
 pub struct Tokens {
     pub access: Secret,
     pub refresh: Option<Secret>,
