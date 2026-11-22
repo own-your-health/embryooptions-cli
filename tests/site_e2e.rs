@@ -602,6 +602,69 @@ fn a_read_answered_403_renews_once_and_is_sent_again() {
     );
 }
 
+/// A read's 403 renewed with a token for another member is exit 3, and the
+/// read is not sent again.
+#[test]
+fn a_read_answered_403_renewed_for_another_member_is_exit_3() {
+    let hook: Hook =
+        Box::new(|request: &Seen| (request.target == ACCOUNT_READ).then(|| (403, "application/json", String::new())));
+    let mut routes = routes();
+    let other_member = test_token(&json!({
+        "user": json!({ "UserId": 4243, "IVFCenterId": 7, "MemberType": 1 }).to_string(),
+        "exp": RENEWED,
+    }));
+    routes.insert(
+        "/api/Auth/RefreshToken".into(),
+        (
+            200,
+            "application/json",
+            json!({ "accessToken": other_member, "refreshToken": "dummy-refresh-2" }).to_string(),
+        ),
+    );
+    let server = serve_with(routes, Some(hook));
+    let env = env_in(&server, &vault("read-403-other"), token(LATER), Some("dummy-refresh"));
+    let e = Site::open(&env, &adult1()).unwrap().api(&account_path()).err().unwrap();
+    assert_eq!(e.exit_code(), 3, "{e}");
+    assert!(e.to_string().contains("not the same member's"), "{e}");
+    assert!(
+        !e.to_string().contains("4243") && !e.to_string().contains("4242"),
+        "{e}"
+    );
+    let targets: Vec<_> = server.seen.lock().unwrap().iter().map(|s| s.target.clone()).collect();
+    assert_eq!(targets, [ACCOUNT_READ, "/api/Auth/RefreshToken"]);
+}
+
+/// A read answered 403 while another process stored a sign-in: the
+/// renewal reads that sign-in, sends no refresh, and the read goes out
+/// again with the sign-in's token.
+#[test]
+fn a_read_answered_403_after_a_sign_in_meanwhile_reads_with_it() {
+    const SIGNED_IN: i64 = 4_200_000_000;
+    let shared = vault("read-403-meanwhile");
+    let hook: Hook = {
+        let other = store_of(&shared);
+        Box::new(move |request: &Seen| {
+            let old = request.token == Some(format!("Bearer {}", token(LATER)));
+            (request.target == ACCOUNT_READ && old).then(|| {
+                other
+                    .put_signin(&adult1(), &session(token(SIGNED_IN), Some("dummy-refresh-signed-in")))
+                    .unwrap();
+                (403, "application/json", String::new())
+            })
+        })
+    };
+    let server = serve_with(routes_refreshing(200), Some(hook));
+    let env = env_in(&server, &shared, token(LATER), Some("dummy-refresh"));
+    let a = Site::open(&env, &adult1()).unwrap().api(&account_path()).unwrap();
+    assert_eq!(a.status, 200);
+    let seen = server.seen.lock().unwrap().clone();
+    let targets: Vec<_> = seen.iter().map(|s| s.target.as_str()).collect();
+    assert_eq!(targets, [ACCOUNT_READ, ACCOUNT_READ]);
+    assert_eq!(seen[1].token, Some(format!("Bearer {}", token(SIGNED_IN))));
+    let stored = env.sessions.get(&adult1()).unwrap().unwrap();
+    assert_eq!(stored.access_token.expose(), token(SIGNED_IN));
+}
+
 /// A read's 403 with no refresh token stored is the 403, with nothing more
 /// sent.
 #[test]
