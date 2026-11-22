@@ -603,14 +603,23 @@ pub fn export<W: Write>(
     let book = book(site)?;
     check_ids(&book, patient, org)?;
     check_currency(&book)?;
-    if let Some(m) = book.balance_mismatch() {
+    // The figures stay in the listings' warnings: this error may reach a
+    // log through medrec, so it says only that they differ.
+    if book.balance_mismatch().is_some() {
         return Err(CliError::Upstream(format!(
-            "{m}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
-             seen to confirm, and writes no stream whose bills would give the wrong balance"
+            "the open bills' outstanding balances do not add up to what the account shows owed: {BIN} reads \
+             `outstandingBalance` as what is owed on each bill, which the API has not yet been seen to confirm, \
+             and writes no stream whose bills would give the wrong balance"
         ))
         .with_remedy(format!(
             "`{BIN} accounts list` and `{BIN} bills list --open` show both figures"
         )));
+    }
+    if since.is_some() {
+        site.warn(format!(
+            "the member API takes no date: {BIN} writes every bill and payment, and --since only goes in the \
+             stream's header"
+        ));
     }
     let now = now_rfc3339();
     let mut w = RecordsWriter::start(out, &header(&book, origin, since))?;

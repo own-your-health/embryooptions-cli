@@ -1166,6 +1166,15 @@ fn records_export_since_drops_nothing_and_says_so() {
     assert_eq!(resources(&lines).len(), resources(&whole).len());
     assert_eq!(of_type(&lines, "Invoice").len(), 3);
     assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 1);
+    let warnings = env.warnings.lines();
+    assert_eq!(
+        warnings
+            .iter()
+            .filter(|w| w.contains("--since only goes in the stream's header"))
+            .count(),
+        1,
+        "only the bounded export warns: {warnings:?}"
+    );
 }
 
 #[test]
@@ -1326,6 +1335,10 @@ fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
         .unwrap();
     assert_eq!(e.exit_code(), 5);
     assert!(e.to_string().contains("writes no stream"), "{e}");
+    assert!(
+        !e.to_string().contains("600.00") && !e.to_string().contains("650.00"),
+        "no figures: {e}"
+    );
     assert!(out.is_empty());
 }
 

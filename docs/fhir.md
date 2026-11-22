@@ -52,7 +52,8 @@ The member API takes no date, so `--since` bounds nothing: every bill and
 payment the history holds is written, and the header's `since_unbounded`
 names every type (`Organization`, `Patient`, `Account`, `Invoice`,
 `PaymentReconciliation`), per DESIGN §1. A bill whose service began
-before `since` and was paid after it still arrives `balanced`.
+before `since` and was paid after it still arrives `balanced`. A warning
+on stderr says so whenever `--since` is given.
 
 | The API shows | In the stream |
 |---|---|
@@ -100,7 +101,8 @@ was not read.
 
 When the open charges' `outstandingBalance` does not add up to the
 account's `billingBalance`, `records export` is exit 5 before the stream,
-and `accounts list` and `bills list` warn on stderr. It is the sign that
+with an error that names neither figure, and `accounts list` and
+`bills list` warn on stderr with both. It is the sign that
 `outstandingBalance` is not what is owed on each charge, which the API has
 not yet been seen to confirm, and a store summing the open Invoices would
 keep a wrong balance.
