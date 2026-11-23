@@ -10,6 +10,7 @@ use pk_cli_core::{CliError, Reason};
 
 use crate::client::{self, Answer, ApiPath, Client};
 use crate::session::{Session, SessionStore};
+use crate::site::Clinic;
 use crate::token::Claims;
 
 /// Where sessions are kept and which API is read.
@@ -144,6 +145,44 @@ impl<'e> Site<'e> {
             client: RefCell::new(client),
             claims,
             renewed_after_refusal: Cell::new(false),
+        })
+    }
+
+    pub fn profile(&self) -> &ProfileName {
+        &self.profile
+    }
+
+    /// The clinic the session was signed in at.
+    pub fn clinic(&self) -> Clinic {
+        self.session.borrow().clinic.clone()
+    }
+
+    /// The token's member id: [`Site::open`] refuses a token without one.
+    /// Never printed: it is hashed into the patient's id.
+    pub fn member_id(&self) -> &str {
+        self.claims.member_id.as_deref().unwrap_or_default()
+    }
+
+    /// The token's `MemberType` (`CRY` for embryos in storage).
+    pub fn member_type(&self) -> Option<&str> {
+        self.claims.member_type.as_deref()
+    }
+
+    pub fn warn(&self, line: String) {
+        self.env.warnings.warn(line);
+    }
+
+    /// One read the readers make: `path` checked as `api` checks it
+    /// ([`client::api_path`]), then its answer as JSON. An answer that is
+    /// not JSON is exit 5.
+    pub fn read(&self, path: &str) -> Result<serde_json::Value, CliError> {
+        let answer = self.api(&client::api_path(path)?)?;
+        serde_json::from_slice(&answer.body).map_err(|_| {
+            CliError::Upstream(format!(
+                "Embryo Options answered {} with no JSON (HTTP {})",
+                answer.what, answer.status
+            ))
+            .with_remedy("the API may have changed; `embryooptions api GET <PATH>` shows the answer")
         })
     }
 

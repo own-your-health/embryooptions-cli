@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- The readers, built on the web app's code (`docs/api.md`, *bundle*) and
+  tested against synthetic answers: `patients list`, `accounts list` (the
+  account, what is owed, the open bills, and the next bill for a member
+  with embryos in storage), `bills list [--open]`, `bills show <ID>`,
+  `payments list` (payments, refunds, discounts and credits, with whether
+  each settled) and `records export --ndjson` (records-stream/v1: the
+  account, a bill per charge in the billing history and the settled
+  payments, per DESIGN §1.10). Every reader reads the account, the clinic
+  and every page of the billing history first; a history whose pages hold
+  fewer rows than its `total`, or an amount that is not a number of two
+  decimals, is exit 5 before anything is printed or streamed.
+- `records export` writes no skip of an `Invoice` but for a charge it could
+  not read, so a records store can tell a bill the site no longer lists;
+  refunds, discounts, credits and rows that move no money are counted in
+  skips of their own. A charge is a row that names its fee; a row of a type
+  the app does not list that names none is no bill, an `Invoice` skip and
+  a warning naming its type. A clinic billing in a currency other than USD,
+  or whose currency was not read, is exit 5, and so are open bills that do
+  not add up to the account's balance (`accounts list` and `bills list`
+  warn). The member API takes no date, so `--since` drops nothing and the
+  header names every type unbounded.
+- `documents list|download`: Embryo Options serves no statement or receipt
+  files, so the list is empty and an id is exit 4.
 - medical-common v0.6.11 and cli-common v0.33.5: the bill's code systems,
   price components, document types, `Money` and totals come from
   `pk_med_records::bill` (DESIGN §1.10) instead of the CLI's own copy. Two

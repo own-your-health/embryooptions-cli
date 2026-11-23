@@ -1,4 +1,4 @@
-//! The command tree (piekstra-cli/1).
+//! The command tree (piekstra-cli/1, health-records/v1, documents/v1).
 
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use pk_cli_auth::LoginArgs;
 use pk_cli_browser::BrowserArgs;
-use pk_cli_core::CommonArgs;
+use pk_cli_core::{CommonArgs, RangeArgs};
 use pk_cli_selfupdate::SelfUpdateArgs;
 
 pub const BIN: &str = "embryooptions";
@@ -48,6 +48,27 @@ pub enum Command {
     /// The logins: one profile per Embryo Options user name (profile-list/v1).
     #[command(subcommand)]
     Profiles(ProfilesCmd),
+    /// The member the sign-in is (patient-list/v1).
+    #[command(subcommand)]
+    Patients(PatientsCmd),
+    /// The member's account at the clinic, with what is owed.
+    #[command(subcommand)]
+    Accounts(AccountsCmd),
+    /// Bills: the storage and other fees on the member's billing history,
+    /// with what is still owed on each.
+    #[command(subcommand)]
+    Bills(BillsCmd),
+    /// Payments, refunds, discounts and credits on the billing history.
+    #[command(subcommand)]
+    Payments(PaymentsCmd),
+    /// Bills and payments as FHIR in records-stream/v1, for `medrec import
+    /// --from embryooptions`.
+    #[command(subcommand)]
+    Records(RecordsCmd),
+    /// Bill and receipt files (documents/v1): Embryo Options serves none,
+    /// so the list is empty.
+    #[command(subcommand)]
+    Documents(DocumentsCmd),
     /// One read of the member API as --profile <NAME>: `GET <PATH>` on
     /// member-api.prod.embryooptions.com, under /api/Members/{memberId}/,
     /// printed as it answers. Read-only: a path naming a payment, a card, a
@@ -164,4 +185,122 @@ pub enum ConfigCmd {
     Path,
     /// Show the effective configuration.
     Show,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PatientsCmd {
+    /// The member the sign-in is, with its id for `records export
+    /// --patient` (patient-list/v1).
+    #[command(visible_alias = "ls")]
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AccountsCmd {
+    /// The member's account: its id, the clinic, what is owed, how many
+    /// bills and the next bill (account-list/v1).
+    #[command(visible_alias = "ls")]
+    List,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BillsCmd {
+    /// One row per bill, newest service first, open and paid (bill-list/v1).
+    /// --since and --until filter on the date of service (a storage fee's
+    /// billing period's start, `date`), not on the day it was posted.
+    #[command(visible_alias = "ls")]
+    List(BillsListArgs),
+    /// One bill with all the billing history says of it (bill/v1).
+    Show(BillShowArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct BillsListArgs {
+    /// Only bills the member still owes on.
+    #[arg(long)]
+    pub open: bool,
+    #[command(flatten)]
+    pub range: RangeArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct BillShowArgs {
+    /// The bill's id from `embryooptions bills list`.
+    pub id: String,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PaymentsCmd {
+    /// Payments, refunds, discounts and credits, newest first, with whether
+    /// each settled (payment-list/v1). --since and --until filter on the day
+    /// each was posted.
+    #[command(visible_alias = "ls")]
+    List(PaymentsListArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct PaymentsListArgs {
+    #[command(flatten)]
+    pub range: RangeArgs,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RecordsCmd {
+    /// The sign-in's bills and payments as records-stream/v1.
+    Export(ExportArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ExportArgs {
+    /// The patient: the id from `embryooptions patients list`. A sign-in is
+    /// one member, so it may be omitted.
+    #[arg(long, value_name = "ID")]
+    pub patient: Option<String>,
+    /// The clinic: the organization id from `embryooptions patients list`.
+    /// A sign-in reads one clinic, so it may be omitted.
+    #[arg(long, value_name = "ORG")]
+    pub org: Option<String>,
+    /// The day of the last pull (YYYY-MM-DD), for the stream's header. The
+    /// member API takes no date, so every bill and payment is still written,
+    /// and the header names every type unbounded.
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub since: Option<String>,
+    /// Write the stream to stdout, which `medrec import --from
+    /// embryooptions` reads. The stream is the output, so --json with it is
+    /// a usage error.
+    #[arg(long, conflicts_with = "output")]
+    pub ndjson: bool,
+    /// Write the stream to DIR/records.ndjson instead (tests and synthetic
+    /// data only: real records go straight into medrec).
+    #[arg(short, long, value_name = "DIR")]
+    pub output: Option<PathBuf>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DocumentsCmd {
+    /// Bill and receipt files (document-list/v1): none, since Embryo
+    /// Options serves none. Sends no request.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Save one document, or every one with --all (document-download/v1,
+    /// document-download-batch/v1): an id is exit 4, and --all saves none.
+    /// Sends no request.
+    Download(DownloadArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DownloadArgs {
+    /// The document's id from `embryooptions documents list`.
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
+    pub id: Option<String>,
+    /// Save every listed document into the directory -o names.
+    #[arg(long, requires = "output")]
+    pub all: bool,
+    /// Where to write: a file or a directory for one document, a directory
+    /// for --all.
+    #[arg(short, long, value_name = "PATH")]
+    pub output: Option<PathBuf>,
+    /// Replace a file that is already there.
+    #[arg(long)]
+    pub overwrite: bool,
 }

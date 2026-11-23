@@ -8,6 +8,8 @@ pub mod bill;
 pub mod cli;
 pub mod client;
 pub mod portal;
+pub mod readers;
+pub mod reads;
 pub mod session;
 pub mod site;
 pub mod token;

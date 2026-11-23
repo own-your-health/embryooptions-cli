@@ -7,7 +7,7 @@ and the payments made. Each clinic has its own web app on
 `<clinic>.embryooptions.com`; all of them call one member API,
 `member-api.prod.embryooptions.com`, with the member's access token.
 `embryooptions` signs in per profile through the clinic's web app, reads
-that API, and will emit FHIR for the household's medical-records system
+that API, and emits FHIR for the household's medical-records system
 (`records-stream/v1`, `medrec import --from embryooptions`). It conforms to
 piekstra-cli/1 and the `health-records/v1` profile, on the `pk-cli-*` crates
 from [cli-common](https://github.com/piekstra/cli-common) and
@@ -15,9 +15,11 @@ from [cli-common](https://github.com/piekstra/cli-common) and
 Every `pk-cli-*` stays on the cli-common tag medical-common pins.
 
 Status: sign-in, sessions, the token refresh and `api` are built, tested
-offline and seen working against the site (2026-11-22). The bill commands
-wait for the API's answers to be mapped; `docs/api.md` marks what was seen
-*observed* and what is read from the web app's JavaScript alone *bundle*.
+offline and seen working against the site (2026-11-22). The readers are
+built on the web app's JavaScript and tested against synthetic answers;
+they have not yet read a real account. `docs/api.md` marks what was seen
+*observed*, what is read from the JavaScript alone *bundle*, and lists
+what the first real read must confirm (Not yet observed).
 
 ## Layout
 
@@ -31,7 +33,9 @@ wait for the API's answers to be mapped; `docs/api.md` marks what was seen
 | `src/token.rs` | the access token's claims, read locally (member id, clinic id, expiry), and what `--stdin` accepts |
 | `src/client.rs` | the reads: the token headers (`token_headers`), the token refresh (`refresh`), pacing, `refuse` (answers to exit codes), and `api_path` / `ApiPath::resolve`, which check an `api` path is the member's own read before it is sent |
 | `src/bill.rs` | the bill model (accounts, bills and their charge lines, payments, statements, receipts) and its FHIR mapping (`docs/fhir.md`). The same file is in flywire-cli, peryourhealth-cli and embryooptions-cli, differing only in the CLI's name in two doc comments: a change to it is made in all three. It needs serde_json's `arbitrary_precision` (Cargo.toml) to keep money's decimal spelling; its unit test fails without it |
-| `src/portal.rs` | the signed-in commands (`Env`: where sessions are kept and which API is read; `Site`, which renews a token due to expire and refuses one it cannot renew before a request) |
+| `src/portal.rs` | the signed-in commands (`Env`: where sessions are kept and which API is read; `Site`, which renews a token due to expire and refuses one it cannot renew before a request, and `Site::read`, a reader's JSON read through the same path check as `api`) |
+| `src/reads.rs` | what the API's answers say: the account, the clinic, the billing history's rows and their kind (`kind_of`), the upcoming bill, and the bill model's account, bills and payments from them |
+| `src/readers.rs` | the reader commands' documents and the `records export` stream: `book` reads the account, the clinic and every page of the history once per command |
 | `docs/api.md` | the site as observed or read from its code, and the traps |
 
 ## Medical data rules

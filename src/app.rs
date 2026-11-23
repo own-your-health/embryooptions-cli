@@ -5,16 +5,21 @@ use clap::{ArgMatches, CommandFactory, FromArgMatches};
 use pk_cli_config::profile::{self, ProfileName, Profiles};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::info::{AuthInfo, CliInfo};
-use pk_cli_core::{output, CliError};
+use pk_cli_core::{output, CliError, Paged, RangeArgs};
 use pk_cli_selfupdate::Updater;
+use pk_med_records::{create_export_file, Finished, RecordsExport, Trailer};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::path::{Path, PathBuf};
 
 use crate::cli::*;
 use crate::portal::{Env, Site};
+use crate::readers;
 
 const REPO: &str = "own-your-health/embryooptions-cli";
 pub const PROFILE_ENV: &str = "EMBRYOOPTIONS_PROFILE";
+/// The profiles `info` names (cli-info/v1).
+pub const PROFILES: &[&str] = &[pk_med_records::PROFILE, pk_cli_documents::PROFILE];
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Config {
@@ -109,6 +114,66 @@ pub fn run(cli: &Cli) -> Result<i32, CliError> {
             no_profile(cli, "config")?;
             config(cli, cmd)?;
         }
+        Command::Patients(PatientsCmd::List) => {
+            let profile = signed_in()?;
+            let v = read(&profile, readers::patients)?;
+            print_list(cli, &v, &["id", "organization", "relationship", "kind"], "patients");
+        }
+        Command::Accounts(AccountsCmd::List) => {
+            let profile = signed_in()?;
+            let v = read(&profile, readers::accounts_list)?;
+            print_list(cli, &v, readers::ACCOUNT_COLUMNS, "accounts");
+        }
+        Command::Bills(BillsCmd::List(args)) => {
+            args.range.validate()?;
+            let profile = signed_in()?;
+            let v = read(&profile, |site| readers::bills_list(site, args.open, &args.range))?;
+            print_list(cli, &v, readers::BILL_COLUMNS, "bills");
+        }
+        Command::Bills(BillsCmd::Show(args)) => {
+            if args.id.trim().is_empty() {
+                return Err(CliError::Usage(format!("give the bill's id from `{BIN} bills list`")));
+            }
+            let profile = signed_in()?;
+            let v = read(&profile, |site| readers::bill_show(site, &args.id))?;
+            print_bill(cli, &v);
+        }
+        Command::Payments(PaymentsCmd::List(args)) => {
+            args.range.validate()?;
+            let profile = signed_in()?;
+            let v = read(&profile, |site| readers::payments_list(site, &args.range))?;
+            print_list(cli, &v, readers::PAYMENT_COLUMNS, "payments");
+        }
+        Command::Records(RecordsCmd::Export(args)) => {
+            // Its own checks first: they reach neither the vault nor the site.
+            export_args(cli, args)?;
+            let profile = signed_in()?;
+            return export(cli, &Env::for_binary()?, &profile, args);
+        }
+        Command::Documents(DocumentsCmd::List) => {
+            signed_in()?;
+            let docs = readers::documents();
+            if cli.common.json {
+                Paged::new("document", docs).emit(true);
+            } else {
+                note(cli, &format!("no documents: {}", readers::NO_DOCUMENTS));
+            }
+        }
+        Command::Documents(DocumentsCmd::Download(args)) => {
+            if args.all && args.output.as_deref().is_some_and(|p| p.as_os_str() == "-") {
+                return Err(CliError::Usage("--all writes a directory, not stdout".into()));
+            }
+            signed_in()?;
+            let batch = readers::download(args)?;
+            if cli.common.json {
+                output::json(&to_json(&batch)?);
+            } else {
+                note(
+                    cli,
+                    &format!("saved no documents to {}: {}", batch.dir, readers::NO_DOCUMENTS),
+                );
+            }
+        }
         Command::Api(args) => {
             let path = crate::client::api_path(&args.path)?;
             let profile = signed_in()?;
@@ -152,11 +217,151 @@ pub fn info() -> CliInfo {
         },
         &[
             "profiles",
+            "patients",
+            "accounts",
+            "bills",
+            "payments",
+            "records",
+            "documents",
             "api",
-            // Every login command takes --profile.
+            // Every login command, records export among them, takes --profile.
             pk_med_records::LOGIN_PROFILES,
         ],
     )
+    .with_profiles(PROFILES)
+}
+
+/// A document as JSON, or the error a machine reader can tell from one.
+fn to_json(v: &impl Serialize) -> Result<serde_json::Value, CliError> {
+    serde_json::to_value(v).map_err(|e| CliError::Other(format!("serializing: {e}")))
+}
+
+/// One signed-in command's read: the profile's session, then `f`.
+fn read<T>(profile: &ProfileName, f: impl FnOnce(&Site) -> Result<T, CliError>) -> Result<T, CliError> {
+    let env = Env::for_binary()?;
+    let site = Site::open(&env, profile)?;
+    f(&site)
+}
+
+fn print_list(cli: &Cli, v: &serde_json::Value, columns: &[&str], what: &str) {
+    if cli.common.json {
+        output::json(v);
+        return;
+    }
+    let rows = output::rows_of(v, "items");
+    if rows.is_empty() {
+        note(cli, &format!("no {what}"));
+    } else {
+        output::table(&output::table_view(&rows, columns));
+    }
+}
+
+/// `bills show`: the bill's fields, then its charge as a table.
+fn print_bill(cli: &Cli, v: &serde_json::Value) {
+    if cli.common.json {
+        output::json(v);
+        return;
+    }
+    let mut head = v.clone();
+    if let Some(o) = head.as_object_mut() {
+        o.remove("charges");
+        o.remove("schema");
+    }
+    output::kv(&head, 0);
+    let charges = output::rows_of(v, "charges");
+    if !charges.is_empty() {
+        println!();
+        output::table(&output::table_view(&charges, readers::CHARGE_COLUMNS));
+    }
+}
+
+// ---------------------------------------------------------------- export
+
+/// `records export`'s own checks, before any profile, vault or request.
+pub fn export_args(cli: &Cli, args: &ExportArgs) -> Result<(), CliError> {
+    if !args.ndjson && args.output.is_none() {
+        return Err(CliError::Usage(format!(
+            "say where the stream goes: --ndjson for stdout (what `medrec import --from {BIN}` reads), or -o <DIR>"
+        )));
+    }
+    if args.ndjson && cli.common.json {
+        return Err(CliError::Usage(
+            "--ndjson writes the records stream, which is the output; drop --json".into(),
+        ));
+    }
+    if let Some(s) = &args.since {
+        RangeArgs {
+            since: Some(s.clone()),
+            ..RangeArgs::default()
+        }
+        .validate()?;
+    }
+    Ok(())
+}
+
+/// The exit code of a stream that ended incomplete: its error's.
+pub fn incomplete_exit(trailer: &Trailer) -> i32 {
+    trailer.error.as_ref().and_then(|e| e.exit_code).unwrap_or(1)
+}
+
+/// `records export` on `env`: the stream on stdout, or with `-o` (a test's
+/// server only) in DIR/records.ndjson with a summary.
+pub fn export(cli: &Cli, env: &Env, profile: &ProfileName, args: &ExportArgs) -> Result<i32, CliError> {
+    let (patient, org, since) = (args.patient.as_deref(), args.org.as_deref(), args.since.as_deref());
+    if let Some(dir) = &args.output {
+        // A plain file of records is for a test's server only: medrec reads
+        // real records from the stream it runs this command for.
+        if env.is_real_site() {
+            return Err(CliError::Usage(
+                "-o writes records to a plain file, which is for tests against a local server only".into(),
+            )
+            .with_remedy(format!(
+                "`--ndjson` writes the stream to stdout; import real records with medrec, which runs that itself: \
+                 `medrec --profile <FOLDER> import --from {BIN} --from-profile {profile} --patient <ID>` \
+                 (`{BIN} patients list` shows the id)"
+            )));
+        }
+        let site = Site::open(env, profile)?;
+        let (path, finished) = export_to_dir(dir, &site, &env.base, patient, org, since)?;
+        let summary = RecordsExport::new(path.display().to_string(), &finished);
+        if cli.common.json {
+            output::json(&to_json(&summary)?);
+        } else {
+            note(
+                cli,
+                &format!("wrote {} ({} resources)", path.display(), finished.trailer.total()),
+            );
+        }
+        return Ok(if finished.trailer.complete {
+            0
+        } else {
+            incomplete_exit(&finished.trailer)
+        });
+    }
+    let site = Site::open(env, profile)?;
+    let stdout = std::io::stdout();
+    let finished = readers::export(&site, &env.base, stdout.lock(), patient, org, since)?;
+    Ok(if finished.trailer.complete {
+        0
+    } else {
+        // The trailer carries the error; exit without a second document.
+        incomplete_exit(&finished.trailer)
+    })
+}
+
+/// The stream in `dir`/records.ndjson, written whole or not at all.
+pub fn export_to_dir(
+    dir: &Path,
+    site: &Site,
+    origin: &str,
+    patient: Option<&str>,
+    org: Option<&str>,
+    since: Option<&str>,
+) -> Result<(PathBuf, Finished), CliError> {
+    let mut export = create_export_file(dir)?;
+    let finished = readers::export(site, origin, std::io::BufWriter::new(&mut export), patient, org, since)?;
+    let path = export.commit(&finished)?;
+    Ok((path, finished))
 }
 
 /// `api`'s answer: a JSON answer as JSON, a page as its text. With --json,

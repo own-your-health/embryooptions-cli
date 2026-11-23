@@ -1,0 +1,42 @@
+{
+  "total": 8,
+  "data": [
+    {
+      "id": 504,
+      "memberPaymentTypeId": "MemberInitiatedPayment",
+      "timestamp": "2025-06-01T12:00:00",
+      "amount": 50.00,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": { "type": "PayPal" },
+      "creditCardSystemStatus": "DEC",
+      "transactionStatus": "processor_declined"
+    },
+    {
+      "id": 505,
+      "memberPaymentTypeId": "FlatDiscount",
+      "timestamp": "2025-01-02T08:00:00",
+      "amount": -25.00,
+      "discountTypeName": "Loyalty"
+    },
+    {
+      "id": 506,
+      "memberPaymentTypeId": "NoticeFee",
+      "timestamp": "2024-12-01T10:00:00",
+      "amount": 25.00,
+      "outstandingBalance": 0.00,
+      "oneTimeFeeName": "Notice fee",
+      "billingCycleStartDate": "0001-01-01T00:00:00"
+    },
+    {
+      "memberPaymentTypeId": "AutomatedPayment",
+      "timestamp": "2024-12-05T10:00:00",
+      "amount": 25.00
+    },
+    {
+      "id": 508,
+      "memberPaymentTypeId": "MemberDisputedChargeResolutionProcessInitiated",
+      "timestamp": "2024-12-02T10:00:00",
+      "amount": 0
+    }
+  ]
+}

@@ -7,16 +7,18 @@ CooperSurgical, Inc. or any clinic.
 on Embryo Options, the portal IVF clinics use to bill for keeping embryos,
 eggs, sperm or testicular tissue frozen. It signs in as you, at your
 clinic's Embryo Options web app, reads what that app shows you, and prints
-it. The bill commands will also write it as FHIR R4 for a personal
+it. The bill commands also write it as FHIR R4 for a personal
 medical-records store (`records-stream/v1`, the `health-records/v1` profile
 of [medical-common](https://github.com/own-your-health/medical-common), read by
 `medrec import --from embryooptions`). It never pays, stores or changes a
 payment method, chooses or changes a disposition, or signs a consent.
 
-Status: sign-in, `auth status` and `api` work. The bill commands
-(`accounts`, `bills`, `payments`, `records export`) come once the signed-in
-API is mapped; until then everything about the API is read from the web
-app's code, not yet seen answering (`docs/api.md`).
+Status: sign-in, `auth status` and `api` work against the site. The bill
+commands (`accounts`, `bills`, `payments`, `records export`) are built on
+the web app's code and tested against synthetic answers; they have not yet
+read a real account, and `docs/api.md` lists what that first read must
+confirm. Embryo Options serves no statement or receipt files, so
+`documents list` is empty.
 
 ## Who it is for
 
@@ -48,7 +50,10 @@ Service keyring such as GNOME Keyring for the stored session.
 embryooptions profiles add me                                        # one profile per user name
 embryooptions auth login --browser --clinic exampleclinic --profile me   # a Chrome window opens; sign in there
 embryooptions auth status --profile me
-embryooptions api GET '/api/Members/{memberId}/MemberAccount/MemberPaymentHistoryAll' --profile me
+embryooptions accounts list --profile me                              # what is owed, and the next bill
+embryooptions bills list --open --profile me                          # the storage fees still owed on
+embryooptions payments list --since 2025-01-01 --profile me
+embryooptions records export --ndjson --profile me | medrec import --from embryooptions ...
 ```
 
 `--clinic` takes the clinic's name from its address (`exampleclinic` for
@@ -108,6 +113,13 @@ command that signs in again:
 |---|---|
 | `profiles list\|add\|remove` | `profile-list/v1`, … |
 | `auth login --browser\|--stdin`, `auth status\|logout\|reset` | `auth-login/v1`, `auth-status/v1`, … |
+| `patients list` | `patient-list/v1`: the member the sign-in is, with the id `records export --patient` takes |
+| `accounts list` | `account-list/v1`: the account, what is owed, the bills open and the next bill |
+| `bills list [--open] [--since] [--until] [--limit]` | `bill-list/v1`: the fees billed, newest service first, with what is owed on each; `--since` and `--until` filter on the date of service |
+| `bills show <ID>` | `bill/v1`: one fee with its period, freeze date, provider, lab and CPT codes |
+| `payments list [--since] [--until] [--limit]` | `payment-list/v1`: payments, refunds, discounts and credits, with whether each settled |
+| `records export --ndjson [--since] [--patient] [--org]` | `records-stream/v1`: the account, its bills and settled payments as FHIR (`docs/fhir.md`) |
+| `documents list\|download` | `document-list/v1`: empty; Embryo Options serves no bill or receipt files |
 | `api GET <PATH>` | a member API answer under `/api/Members/{memberId}/`, as it came |
 | `config path\|show`, `info`, `completions`, `self-update` | `config/v1`, `cli-info/v1`, … |
 
