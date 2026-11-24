@@ -557,6 +557,9 @@ fn a_test_run_without_a_base_url_sends_nothing() {
             "adult1",
         ],
         &["accounts", "list", "--profile", "adult1"],
+        &["bills", "list", "--profile", "adult1"],
+        &["payments", "list", "--profile", "adult1"],
+        &["records", "export", "--ndjson", "--profile", "adult1"],
         &["auth", "login", "--stdin", "--profile", "adult1"],
         &["auth", "login", "--browser", "--profile", "adult1"],
     ];

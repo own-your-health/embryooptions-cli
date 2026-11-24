@@ -19,7 +19,9 @@ Report a vulnerability privately through GitHub's "Report a vulnerability"
   127.0.0.1, localhost or `[::1]`, `EMBRYOOPTIONS_KEYCHAIN_SERVICE` names a
   test service (`piekstra.embryooptions.<suffix>`) and `XDG_CONFIG_HOME` is
   set away from `~/.config`, so a token the owner stored is never sent
-  anywhere but Embryo Options.
+  anywhere but Embryo Options. While `EMBRYOOPTIONS_KEYCHAIN_SERVICE` is set, `EMBRYOOPTIONS_BASE_URL` is
+  required: without a loopback base, every command that would send a request
+  exits 2 before sending anything.
 - `embryooptions api` is held to the same, and refuses before anything is
   sent a path outside the member's own, another member's id, and any path
   that names a payment, a card or payment method, a charge, a disposition,
