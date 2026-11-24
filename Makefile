@@ -50,7 +50,7 @@ dev:
 # browser profile: EMBRYOOPTIONS_KEYCHAIN_SERVICE names a service that holds
 # nothing, with the vault under target/smoke-config, and embryooptions leaves the
 # kept browser profiles alone. Nothing is stored, so no key is read.
-HERMETIC := EMBRYOOPTIONS_KEYCHAIN_SERVICE=piekstra.embryooptions.hermetic-tests XDG_DATA_HOME=$(CURDIR)/target/smoke-data \
+HERMETIC := EMBRYOOPTIONS_KEYCHAIN_SERVICE=piekstra.embryooptions.hermetic-tests EMBRYOOPTIONS_BASE_URL=http://127.0.0.1:9 XDG_DATA_HOME=$(CURDIR)/target/smoke-data \
 	XDG_CONFIG_HOME=$(CURDIR)/target/smoke-config
 smoke: build
 	@./target/debug/$(BIN) --version >/dev/null
