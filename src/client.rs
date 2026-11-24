@@ -59,7 +59,8 @@ pub fn token_headers(access_token: &str) -> Result<HeaderMap, CliError> {
 pub const BASE: &str = "https://member-api.prod.embryooptions.com";
 /// Points the reads at a test's loopback server instead of [`BASE`]
 /// ([`base`]).
-/// Required, and only a loopback origin, while a test\'s keychain service
+///
+/// Required, and only a loopback origin, while a test's keychain service
 /// is set ([`base_from`]).
 pub const BASE_URL_ENV: &str = "EMBRYOOPTIONS_BASE_URL";
 /// The least time between one answer and the next request.
