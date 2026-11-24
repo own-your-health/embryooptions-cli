@@ -157,4 +157,7 @@ address, and only over a test's own store: an
 `EMBRYOOPTIONS_KEYCHAIN_SERVICE` of `piekstra.embryooptions.<suffix>` and an
 `XDG_CONFIG_HOME` away from `~/.config` (`session::is_test_store`), so no
 token the owner stored can be sent to it; `auth login --browser` refuses
-it.
+it. Under `EMBRYOOPTIONS_KEYCHAIN_SERVICE` (`session::hermetic`) the override
+is required: with no `EMBRYOOPTIONS_BASE_URL`, every command that would send a
+request is exit 2 before sending it (`client::base_from`), so a test run that
+forgets the server never reaches the member API.

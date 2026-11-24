@@ -59,6 +59,9 @@ pub fn token_headers(access_token: &str) -> Result<HeaderMap, CliError> {
 pub const BASE: &str = "https://member-api.prod.embryooptions.com";
 /// Points the reads at a test's loopback server instead of [`BASE`]
 /// ([`base`]).
+///
+/// Required, and only a loopback origin, while a test's keychain service
+/// is set ([`base_from`]).
 pub const BASE_URL_ENV: &str = "EMBRYOOPTIONS_BASE_URL";
 /// The least time between one answer and the next request.
 pub const PACE: Duration = Duration::from_millis(750);
@@ -68,21 +71,40 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY: u64 = 32 * 1024 * 1024;
 
 /// The origin this process reads: [`BASE`], unless [`BASE_URL_ENV`] names a
-/// test's server.
+/// test's server, which it must under a test's keychain service.
 pub fn base() -> Result<String, CliError> {
     base_from(
         std::env::var(BASE_URL_ENV).ok().as_deref(),
         crate::session::is_test_store(),
+        crate::session::hermetic(),
     )
 }
 
-/// The check behind [`base`], on the values passed in. The override is for
+/// The refusal of a request under a test's keychain service
+/// (`session::hermetic`) with no [`BASE_URL_ENV`]: a test run reads only a
+/// server on this machine, never the member API.
+fn hermetic_without_base() -> CliError {
+    CliError::Usage(format!(
+        "{} is set, so this is a test run, and a test run sends requests only to a server on this \
+         machine: set {BASE_URL_ENV} to its loopback origin, like http://127.0.0.1:8080 (unset {} \
+         to read the member API)",
+        crate::session::KEYCHAIN_SERVICE_ENV,
+        crate::session::KEYCHAIN_SERVICE_ENV
+    ))
+}
+
+/// The check behind [`base`], on the values passed in. Under a
+/// test's keychain service (`hermetic`) the override is required, so a
+/// test that forgets it is refused before it sends anything. The override is for
 /// a test's server: a plain `http` origin on a loopback address, and only
 /// over a test's own session store (`session::is_test_store`), so no
 /// token the owner stored is sent to it. An ambient variable sending a real
 /// token elsewhere would be a way to steal it.
-pub fn base_from(value: Option<&str>, test_store: bool) -> Result<String, CliError> {
+pub fn base_from(value: Option<&str>, test_store: bool, hermetic: bool) -> Result<String, CliError> {
     let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        if hermetic {
+            return Err(hermetic_without_base());
+        }
         return Ok(BASE.to_string());
     };
     let refuse = |why: &str| {
@@ -588,21 +610,40 @@ mod tests {
     }
 
     #[test]
+    fn a_test_run_without_a_base_is_refused_before_any_request() {
+        for test_store in [true, false] {
+            let e = base_from(None, test_store, true).unwrap_err();
+            assert_eq!(e.exit_code(), 2);
+            let m = e.to_string();
+            assert!(
+                m.contains(BASE_URL_ENV) && m.contains(crate::session::KEYCHAIN_SERVICE_ENV),
+                "{m}"
+            );
+        }
+        assert_eq!(
+            base_from(Some("http://127.0.0.1:8"), true, true).unwrap(),
+            "http://127.0.0.1:8"
+        );
+    }
+
+    #[test]
     fn the_base_is_the_api_unless_a_test_points_it_at_loopback() {
-        assert_eq!(base_from(None, false).unwrap(), BASE);
-        assert_eq!(base_from(Some("  "), false).unwrap(), BASE);
+        assert_eq!(base_from(None, false, false).unwrap(), BASE);
+        assert_eq!(base_from(Some("  "), false, false).unwrap(), BASE);
         for ok in [
             "http://127.0.0.1:8080",
             "http://127.0.0.1:8080/",
             "http://localhost:9",
             "http://[::1]:9",
         ] {
-            let b = base_from(Some(ok), true).unwrap();
+            let b = base_from(Some(ok), true, false).unwrap();
             assert!(!b.ends_with('/'), "{b}");
         }
         // Without a test's own store, a real token could travel.
         assert_eq!(
-            base_from(Some("http://127.0.0.1:8080"), false).unwrap_err().exit_code(),
+            base_from(Some("http://127.0.0.1:8080"), false, false)
+                .unwrap_err()
+                .exit_code(),
             2
         );
         for bad in [
@@ -616,7 +657,7 @@ mod tests {
             "http://127.0.0.2:8",
             "127.0.0.1:8",
         ] {
-            assert_eq!(base_from(Some(bad), true).unwrap_err().exit_code(), 2, "{bad}");
+            assert_eq!(base_from(Some(bad), true, false).unwrap_err().exit_code(), 2, "{bad}");
         }
     }
 

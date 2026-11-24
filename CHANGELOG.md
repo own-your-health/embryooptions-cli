@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- While `EMBRYOOPTIONS_KEYCHAIN_SERVICE` names a test's keychain service, a command
+  that would send a request without a loopback `EMBRYOOPTIONS_BASE_URL` is exit 2
+  before sending it, so a test run never reaches the member API.
 - The readers, built on the web app's code (`docs/api.md`, *bundle*) and
   tested against synthetic answers: `patients list`, `accounts list` (the
   account, what is owed, the open bills, and the next bill for a member

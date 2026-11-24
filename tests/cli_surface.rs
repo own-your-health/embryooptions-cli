@@ -60,9 +60,16 @@ fn bare() -> Command {
     cmd
 }
 
+/// A loopback origin no test listens on. Under the test keychain service a
+/// command that would send a request needs `EMBRYOOPTIONS_BASE_URL`; with this
+/// one, a test that finds no session still reaches its own refusal, and a
+/// request that went out anyway would be refused by this machine.
+const NO_SERVER: &str = "http://127.0.0.1:9";
+
 fn embryooptions() -> Command {
     let mut cmd = bare();
-    cmd.env("XDG_CONFIG_HOME", config_with(&["adult1"]));
+    cmd.env("XDG_CONFIG_HOME", config_with(&["adult1"]))
+        .env("EMBRYOOPTIONS_BASE_URL", NO_SERVER);
     cmd
 }
 
@@ -356,16 +363,15 @@ fn auth_login_checks_its_flags_before_anything() {
             .assert()
             .code(2);
     }
-    // No session is stored, so there is no clinic to reuse.
-    for args in [vec!["auth", "login", "--browser"], vec!["auth", "login", "--stdin"]] {
-        embryooptions()
-            .args(&args)
-            .args(["--profile", "adult1"])
-            .write_stdin("")
-            .assert()
-            .code(2)
-            .stderr(predicate::str::contains("--clinic <SLUG>"));
-    }
+    // No session is stored, so there is no clinic to reuse. `--browser`
+    // shares the check, but under the test keychain service it is refused
+    // first (`a_test_run_without_a_base_url_sends_nothing`).
+    embryooptions()
+        .args(["auth", "login", "--stdin", "--profile", "adult1"])
+        .write_stdin("")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--clinic <SLUG>"));
 }
 
 #[test]
@@ -533,4 +539,39 @@ fn documents_are_none() {
         .assert()
         .success();
     assert_eq!(json_of(&out)["count"], 0);
+}
+
+/// Under the test keychain service a command that would send a request
+/// needs `EMBRYOOPTIONS_BASE_URL`: without it, it is refused before any
+/// request, so a test that forgets its server never reaches the real site.
+/// `EMBRYOOPTIONS_CHROME` names no browser, so `auth login --browser` could not
+/// open one even if the refusal came too late.
+#[test]
+fn a_test_run_without_a_base_url_sends_nothing() {
+    let cases: &[&[&str]] = &[
+        &[
+            "api",
+            "GET",
+            "/api/Members/{memberId}/MemberAccount/Member",
+            "--profile",
+            "adult1",
+        ],
+        &["accounts", "list", "--profile", "adult1"],
+        &["bills", "list", "--profile", "adult1"],
+        &["payments", "list", "--profile", "adult1"],
+        &["records", "export", "--ndjson", "--profile", "adult1"],
+        &["auth", "login", "--stdin", "--profile", "adult1"],
+        &["auth", "login", "--browser", "--profile", "adult1"],
+    ];
+    for &args in cases {
+        embryooptions()
+            .env_remove("EMBRYOOPTIONS_BASE_URL")
+            .env("EMBRYOOPTIONS_CHROME", "/nonexistent/chrome")
+            .args(args)
+            .write_stdin("a=b")
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("EMBRYOOPTIONS_BASE_URL"))
+            .stderr(predicate::str::contains("EMBRYOOPTIONS_KEYCHAIN_SERVICE is set"));
+    }
 }
