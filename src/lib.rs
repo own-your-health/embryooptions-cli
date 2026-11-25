@@ -1,6 +1,6 @@
 //! `embryooptions`: a member's storage bills from Embryo Options, the billing
-//! portal IVF clinics use for embryo and egg storage, for the household
-//! medical-records system (health-records/v1). Read-only.
+//! portal IVF clinics use for embryo and egg storage, for a personal
+//! medical-records store (health-records/v1). Read-only.
 
 pub mod app;
 pub mod auth;
