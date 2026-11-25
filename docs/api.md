@@ -13,15 +13,11 @@ app calls one member API, `https://member-api.prod.embryooptions.com`,
 with the signed-in member's access token. embryooptions reads that API with
 `GET`s only.
 
-Status: on 2026-11-20, without signing in, a clinic's web app was opened
-and its `/env.js`, its JavaScript and its Terms of Use were read. On
-2026-11-22 a member signed in, and the sign-in's answer, the headers the
-app sends, the account read, the token's lifetime and the token refresh
-were seen. What was seen is marked *observed*. The rest comes from the
-JavaScript alone, the code every visitor's browser downloads, and has not
-been seen answering; it is marked *bundle*. The readers (`accounts`,
-`bills`, `payments`, `records export`) are built on that reading and tested
-against synthetic answers of the same shape; [Not yet
+Status: a field, header or answer seen on the site itself is marked
+*observed*. What comes from the web app's JavaScript alone, the code
+every visitor's browser downloads, is marked *bundle*. The readers
+(`accounts`, `bills`, `payments`, `records export`) are built on that
+reading and tested against synthetic answers of the same shape; [Not yet
 observed](#not-yet-observed) lists what a signed-in read must confirm.
 
 ## Where it is
@@ -42,7 +38,7 @@ observed](#not-yet-observed) lists what a signed-in read must confirm.
 - `GET /api/Auth/OffsiteStorageFromUrl` (*bundle*) suggests that off-site
   storage has web apps of its own. A member with specimens in two places may
   have two logins, one profile each.
-- www.embryooptions.com did not answer on 2026-11-20 (*observed*).
+- www.embryooptions.com did not answer (*observed*).
 
 ## Sign-in
 
@@ -212,16 +208,17 @@ the others are marked *bundle*.
   processor's response codes.
 - `memberPaymentTypeId` is a code or a word. The codes read here are `PAY`
   (a payment), `CHG` (a charge) and `DIS` (a discount); any other code is
-  not known. `paymentSubType` narrows it (such as `MEMBER_INT_PMT` or
-  `RECURRING_FEE`). The words the app translates, read here too, are from
-  its own list: the payments (`MemberInitiatedPayment`,
-  `AutomatedPayment`, `ScheduledInstallmentPayment`, `CollectedPayment`,
+  not known. `paymentSubType` narrows it. The words the app translates,
+  read here too, are from its own list: the payments
+  (`MemberInitiatedPayment`, `AutomatedPayment`,
+  `ScheduledInstallmentPayment`, `CollectedPayment`,
   `CenterInitiatedPayment`, `CenterInitiatedAdvancePayment`,
   `DirectPaymentToCenterByCheck`, `DirectAdvancePaymentToCenterByCheck`),
   the refunds (`RefundViaCheck`, `Reimbursement`), the discounts
   (`Discount`, `FlatDiscount`, `CenterInitiatedDiscount`,
-  `InsuranceDiscount`), `Credit`, `MemberDisputedChargeResolutionProcessInitiated`,
-  and `PastDue`, `BalanceForward` and `Through` (*bundle*).
+  `InsuranceDiscount`), `Credit`,
+  `MemberDisputedChargeResolutionProcessInitiated`, and `PastDue`,
+  `BalanceForward` and `Through` (*bundle*).
 - A coded row's `amount` can be a string of a decimal, negative for a
   payment and positive for a charge. `outstandingBalance` and
   `transactionStatus` are optional.

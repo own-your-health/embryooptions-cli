@@ -188,7 +188,7 @@ pub struct Row {
     /// `Credit Card`, `PayPal` or `Check`. Never the card's or account's
     /// digits.
     pub method: Option<String>,
-    /// `paymentSubType`, such as `MEMBER_INT_PMT` or `RECURRING_FEE`.
+    /// `paymentSubType`: what narrows the type.
     pub sub_type: Option<String>,
     /// The row's sign or subtype contradicts its code, so `kind` is not what
     /// the code says (a `PAY` paid back, a `CHG` taken off).
@@ -897,8 +897,8 @@ mod tests {
         };
         let pay = |amount: &str, sub: &str| json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": amount, "paymentSubType": sub});
         let chg = |amount: &str| json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": amount});
-        assert_eq!(kind(pay("-600.00", "MEMBER_INT_PMT")), (Kind::Payment, Some(60000)));
-        assert_eq!(kind(pay("600.00", "MEMBER_INT_PMT")), (Kind::Refund, Some(60000)));
+        assert_eq!(kind(pay("-600.00", "EXAMPLE_SUBTYPE")), (Kind::Payment, Some(60000)));
+        assert_eq!(kind(pay("600.00", "EXAMPLE_SUBTYPE")), (Kind::Refund, Some(60000)));
         assert_eq!(kind(pay("-600.00", "CC_REFUND")), (Kind::Refund, Some(60000)));
         assert_eq!(kind(chg("600.00")), (Kind::Charge, Some(60000)));
         assert_eq!(kind(chg("-600.00")), (Kind::Credit, Some(60000)));
