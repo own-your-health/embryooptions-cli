@@ -6,10 +6,11 @@
 //!
 //! - Amounts are in the clinic's currency, spelled as decimals (`125.00`):
 //!   the app formats them as they come, with no division by 100. A JSON
-//!   number with at most two decimals is read; anything else is exit 5
-//!   naming the field, never with its value.
-//! - Dates are .NET date-times: the first ten characters are the day. Year
-//!   1 (`0001-01-01`, .NET's empty date) is no date.
+//!   number with at most two decimals, or a string of one, is read;
+//!   anything else is exit 5 naming the field, never with its value.
+//! - Dates are .NET date-times, whose first ten characters are the day, or
+//!   written out (`05 March, 2024 08:15:42`). Year 1 (`0001-01-01`, .NET's
+//!   empty date) is no date.
 //! - A missing or `null` field is `None`.
 //! - The billing history is one list of every row the member's account
 //!   has: charges, payments, refunds, discounts and credits, told apart by
