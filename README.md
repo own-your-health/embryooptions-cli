@@ -13,11 +13,11 @@ of [medical-common](https://github.com/own-your-health/medical-common), read by
 `medrec import --from embryooptions`). It never pays, stores or changes a
 payment method, chooses or changes a disposition, or signs a consent.
 
-Status: sign-in, `auth status` and `api` work against the site. The bill
-commands (`accounts`, `bills`, `payments`, `records export`) are built on
-the web app's code and tested against synthetic answers; they have not yet
-read a real account, and `docs/api.md` lists what that first read must
-confirm. Embryo Options serves no statement or receipt files, so
+Status: the sign-in, `auth status`, `api` and the bill commands
+(`accounts`, `bills`, `payments`, `records export`) work against the site.
+They are tested against synthetic answers, and `docs/api.md` marks which
+fields were seen on the site and which come from the web app's code alone.
+Embryo Options serves no statement or receipt files, so
 `documents list` is empty.
 
 ## Who it is for
@@ -102,9 +102,10 @@ that has expired or expires within 60 seconds, `embryooptions` asks Embryo
 Options for a new pair with the refresh token, as the web app does, and
 stores it in place of the old one.
 
-How long a refresh token lasts is not known yet. Once Embryo Options
-refuses it, or with no refresh token stored, a read exits 3 and prints the
-command that signs in again:
+How long a refresh token lasts is not published, and it can be refused
+after days without use. Once Embryo Options refuses it, or with no
+refresh token stored, a read exits 3 and prints the command that signs
+in again:
 `embryooptions auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`.
 
 ## Commands

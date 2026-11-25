@@ -167,7 +167,8 @@ embryooptions renews before a command's first read (`portal::Site::open`,
   with a warning.
 - A new pair that cannot be stored is still read with, with a warning.
 
-How long a refresh token lasts is not known yet.
+How long a refresh token lasts is not published, and it can be refused
+after days without use.
 
 ## The member API
 

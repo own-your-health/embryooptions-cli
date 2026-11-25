@@ -46,7 +46,7 @@ Report a vulnerability privately through GitHub's "Report a vulnerability"
   (about 10 minutes long) has expired or expires within 60 s, or once per
   command when the API answers a read 403. The new pair
   replaces the old one in the vault. How long a refresh token lasts is not
-  known yet.
+  published, and it can be refused after days without use.
 - Each refresh answers a new refresh token, so the renewal holds an
   exclusive lock on the empty file `~/.config/embryooptions/token-refresh.lock`
   from the read of the stored session to the write of the new pair, and

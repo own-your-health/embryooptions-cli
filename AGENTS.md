@@ -123,7 +123,7 @@ answered 401 or 403, or an expired token with no refresh token, is exit 3
 with the remedy
 `auth login --browser --clinic <SLUG> --profile <NAME> --overwrite`, the
 clinic filled in from the session. How long a refresh token lasts is not
-known yet.
+published, and it can be refused after days without use.
 
 `client::Client` sends one `GET` at a time, at least `client::PACE` apart,
 follows no redirect, and maps answers to exit codes: a 401 is 3; a 404 is
