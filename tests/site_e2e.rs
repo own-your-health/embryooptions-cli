@@ -774,6 +774,9 @@ const MEMBER_FIXTURE: &str = include_str!("fixtures/member.json");
 const CLINIC_FIXTURE: &str = include_str!("fixtures/clinic.json");
 const HISTORY_1: &str = include_str!("fixtures/history-page-1.json");
 const HISTORY_2: &str = include_str!("fixtures/history-page-2.json");
+/// Invented rows in the string format: string amounts, written-out dates,
+/// codes for types, no `outstandingBalance` and no `transactionStatus`.
+const HISTORY_STRINGS: &str = include_str!("fixtures/history-string-shape.json");
 const UPCOMING_FIXTURE: &str = include_str!("fixtures/upcoming.json");
 
 const MEMBER_AT: &str = "/api/Members/4242/MemberAccount/Member?ivfCenterId=7";
@@ -1141,6 +1144,176 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
         "no skip is an Invoice's, so a store may tell a bill the site dropped"
     );
     assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+}
+
+/// A scheduled payment, one the processor has not finished, and one with no
+/// status are never written as paid.
+#[test]
+fn records_export_never_writes_a_payment_that_has_not_settled() {
+    let mut page: serde_json::Value = serde_json::from_str(HISTORY_2).unwrap();
+    let rows = page["data"].as_array_mut().unwrap();
+    let row = |id: u64, kind: &str, at: &str, status: serde_json::Value| {
+        json!({
+            "id": id,
+            "memberPaymentTypeId": kind,
+            "timestamp": format!("{at}T09:00:00"),
+            "amount": -600.00,
+            "creditCardSystemStatus": null,
+            "transactionStatus": status,
+        })
+    };
+    rows.push(row(901, "ScheduledInstallmentPayment", "2999-01-03", json!("settled")));
+    rows.push(row(
+        902,
+        "AutomatedPayment",
+        "2025-05-01",
+        json!("submitted_for_settlement"),
+    ));
+    rows.push(row(903, "AutomatedPayment", "2025-05-02", json!(null)));
+    let total = 8 + 3;
+    page["total"] = json!(total);
+    let mut page1: serde_json::Value = serde_json::from_str(HISTORY_1).unwrap();
+    page1["total"] = json!(total);
+    let mut routes = reader_routes();
+    routes.insert(page_at(1), ok(&page1.to_string()));
+    routes.insert(page_at(2), ok(&page.to_string()));
+    let server = serve(routes);
+    let env = reader_env(&server, "unsettled");
+    let site = Site::open(&env, &adult1()).unwrap();
+
+    let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
+    let state = |id: &str| {
+        let r = v["items"].as_array().unwrap().iter().find(|r| r["id"] == id).unwrap();
+        (
+            r["state"].as_str().unwrap().to_string(),
+            r["settled"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(state("901"), ("scheduled".into(), false));
+    assert_eq!(state("902"), ("pending".into(), false));
+    assert_eq!(state("903"), ("unconfirmed".into(), false));
+    assert_eq!(state("502"), ("settled".into(), true));
+
+    let mut out = Vec::new();
+    readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    let lines = stream_of(&out);
+    let ids: Vec<_> = of_type(&lines, "PaymentReconciliation")
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(ids, [json!("payment-502")]);
+    let skipped = lines.last().unwrap()["skipped"].to_string();
+    assert!(
+        skipped.contains("2 scheduled or pending and 1 not shown to have settled"),
+        "{skipped}"
+    );
+}
+
+/// The routes for the string format, with the account owing `balance`.
+fn string_routes(balance: &str) -> Routes {
+    let mut r = reader_routes();
+    r.insert(page_at(1), ok(HISTORY_STRINGS));
+    r.insert(
+        MEMBER_AT.into(),
+        ok(&edited(
+            MEMBER_FIXTURE,
+            "\"billingBalance\": 600.00",
+            &format!("\"billingBalance\": {balance}"),
+        )),
+    );
+    r
+}
+
+#[test]
+fn the_string_format_reads_as_a_bill_paid_by_a_card_payment() {
+    let server = serve(string_routes("0.00"));
+    let env = reader_env(&server, "string-paid");
+    let site = Site::open(&env, &adult1()).unwrap();
+
+    let a = readers::accounts_list(&site).unwrap()["items"][0].clone();
+    assert_eq!(a["owes"].to_string(), "0.00");
+    assert_eq!(
+        (a["bills"].as_u64(), a["open_bills"].as_u64(), a["payments"].as_u64()),
+        (Some(1), Some(0), Some(1))
+    );
+    assert_eq!(a["owed_on_bills"].to_string(), "0.00");
+
+    let b = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
+    assert_eq!(b["items"].as_array().unwrap().len(), 1);
+    let row = &b["items"][0];
+    assert_eq!(
+        (row["date"].as_str(), row["end"].as_str()),
+        (Some("2024-04-01"), Some("2025-03-31"))
+    );
+    assert_eq!(row["posted"], "2024-03-05");
+    assert_eq!(
+        (row["open"].as_bool(), row["owes"].to_string()),
+        (Some(false), "0.00".into())
+    );
+    assert_eq!(row["billed"].to_string(), "75.00");
+
+    let p = readers::payments_list(&site, &RangeArgs::default()).unwrap();
+    let p = &p["items"][0];
+    assert_eq!(
+        (
+            p["kind"].as_str(),
+            p["state"].as_str(),
+            p["settled"].as_bool(),
+            p["date"].as_str()
+        ),
+        (Some("payment"), Some("settled"), Some(true), Some("2024-03-05"))
+    );
+    assert_eq!(
+        (p["subtype"].as_str(), p["method"].as_str()),
+        (Some("MEMBER_INT_PMT"), Some("Mastercard"))
+    );
+    assert_eq!(p["amount"].to_string(), "75.00");
+
+    let mut out = Vec::new();
+    readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    let text = String::from_utf8(out.clone()).unwrap();
+    assert!(text.contains(r#""value":75.00"#), "{text}");
+    for absent in ["1111", "dummy-auth-ref"] {
+        assert!(!text.contains(absent), "{absent}");
+    }
+    let lines = stream_of(&out);
+    let invoices = of_type(&lines, "Invoice");
+    assert_eq!(invoices.len(), 1);
+    assert_eq!(invoices[0]["status"], "balanced");
+    assert_eq!(invoices[0]["totalNet"]["value"].to_string(), "0.00");
+    assert_eq!(invoices[0]["contained"][0]["code"]["coding"][0]["code"], "12345");
+    let payments = of_type(&lines, "PaymentReconciliation");
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0]["paymentDate"], "2024-03-05");
+    assert_eq!(payments[0]["paymentAmount"]["value"].to_string(), "75.00");
+    assert_eq!(lines.last().unwrap()["skipped"], json!([]));
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+}
+
+#[test]
+fn an_account_that_owes_and_says_not_which_bill_is_refused() {
+    let server = serve(string_routes("75.00"));
+    let env = reader_env(&server, "string-owes");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = readers::accounts_list(&site).unwrap()["items"][0].clone();
+    assert_eq!(a["owes"].to_string(), "75.00");
+    assert!(a["owed_on_bills"].is_null());
+    assert!(
+        env.warnings
+            .lines()
+            .iter()
+            .any(|w| w.contains("no bill says what is owed on it")),
+        "{:?}",
+        env.warnings.lines()
+    );
+    let mut out = Vec::new();
+    let e = readers::export(&site, &server.base, &mut out, None, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(out.is_empty(), "nothing is streamed");
+    let bills = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
+    assert!(bills["items"][0]["owes"].is_null(), "{bills}");
 }
 
 /// The member API takes no date, so `--since` drops nothing: the header

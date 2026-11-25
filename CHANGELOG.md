@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A scheduled payment never reads as paid. A payment is settled only on
+  positive evidence; one dated after today, pending at the processor, turned
+  down or of a status or type not known is `scheduled`, `pending`, `failed`
+  or `unconfirmed` in `payments list`'s new `state` field (with a new
+  `subtype`), and is counted in `records export`'s `not_settled` skip instead
+  of written. **Breaking for readers of `settled`:** it is now true only for
+  the `settled` state, so a payment submitted for settlement, one with no
+  status or one dated in the future, which used to be `settled: true`, is
+  `false`; `state` says why. The text table keeps its `settled` column and
+  adds `state`.
+- The billing history is read in either format (`docs/api.md`): amounts as
+  numbers or strings, dates as .NET date-times or written out, the codes
+  `PAY`, `CHG` and `DIS`, and rows with no `outstandingBalance`. An account whose balance is
+  0 owes 0 on every bill; one that owes, with no bill saying on which, is a
+  warning on the lists and exit 5 in `records export`. Before, a
+  string amount was exit 5.
 - While `EMBRYOOPTIONS_KEYCHAIN_SERVICE` names a test's keychain service, a command
   that would send a request without a loopback `EMBRYOOPTIONS_BASE_URL` is exit 2
   before sending it, so a test run never reaches the member API.

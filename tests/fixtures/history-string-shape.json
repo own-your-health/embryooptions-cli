@@ -1,0 +1,60 @@
+{
+  "count": 2,
+  "total": 2,
+  "data": [
+    {
+      "id": 901,
+      "memberPaymentTypeId": "PAY",
+      "paymentSubType": "MEMBER_INT_PMT",
+      "timestamp": "05 March, 2024 08:15:42",
+      "amount": "-75.00",
+      "billingNote": "Dummy card payment note",
+      "billingCycleStartDate": null,
+      "billingCycleEndDate": null,
+      "recurringFeeName": null,
+      "oneTimeFeeName": null,
+      "discountTypeName": null,
+      "cptcode1": null,
+      "cptcode2": null,
+      "cptcode3": null,
+      "memberFreezeEvent": null,
+      "memberFreezeEventDate": null,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethodType": "Credit Card",
+      "memberPaymentMethod": {
+        "id": 1,
+        "type": "Credit Card",
+        "creditCardDetails": { "cardType": "Mastercard", "maskedNumber": "************1111" }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionAuthReference": "dummy-auth-ref",
+      "ivfCenterLab": null,
+      "ivfCenterProvider": null
+    },
+    {
+      "id": 902,
+      "memberPaymentTypeId": "CHG",
+      "paymentSubType": "RECURRING_FEE",
+      "timestamp": "05 March, 2024 08:15:42",
+      "amount": "75.00",
+      "billingNote": "Dummy annual storage fee note",
+      "billingCycleStartDate": "01 April, 2024 00:00:00",
+      "billingCycleEndDate": "31 March, 2025 00:00:00",
+      "recurringFeeName": "Annual embryo storage",
+      "oneTimeFeeName": null,
+      "discountTypeName": null,
+      "cptcode1": "12345",
+      "cptcode2": null,
+      "cptcode3": "N/A",
+      "memberFreezeEvent": { "id": 31, "freezeDate": "02 February, 2019 00:00:00" },
+      "memberFreezeEventDate": null,
+      "memberPaymentMethodId": null,
+      "memberPaymentMethod": null,
+      "memberPaymentMethodType": null,
+      "creditCardSystemStatus": null,
+      "transactionAuthReference": null,
+      "ivfCenterLab": { "name": "Example Lab", "taxId": "00-0000001" },
+      "ivfCenterProvider": { "fullName": "Dr. Example Provider" }
+    }
+  ]
+}

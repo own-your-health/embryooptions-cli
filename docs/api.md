@@ -177,7 +177,7 @@ How long a refresh token lasts is not known yet.
 
 Every path below is a `GET` with the [headers](#the-headers) above.
 `MemberAccount/Member` has been seen answering a JSON object (*observed*);
-the others have not been seen answering (*bundle*).
+the others are marked *bundle*.
 
 | Path | What the app shows with it |
 |---|---|
@@ -188,7 +188,7 @@ the others have not been seen answering (*bundle*).
 | `/api/Members/{memberId}/MemberIvfCenter` | the member's clinic: its name, billing address and the currency it bills in |
 | `/api/Members/{memberId}/MemberIvfCenter/CollectionSites` | the clinic's collection sites |
 
-### The answers (*bundle*)
+### The answers
 
 - `MemberAccount/Member` (*observed* keys) holds the account's `id`,
   `billingBalance` (the app's Unpaid Balance; it offers a payment when it is
@@ -210,16 +210,24 @@ the others have not been seen answering (*bundle*).
   `creditCardSystemStatus` (`ACC` accepted, `DEC` declined, `EXP`, `INV`,
   `ERR`), `transactionAuthReference`, `transactionStatus` and the payment
   processor's response codes.
-- `memberPaymentTypeId` is a word the app translates. The app's own list
-  names the payments (`MemberInitiatedPayment`, `AutomatedPayment`,
-  `ScheduledInstallmentPayment`, `CollectedPayment`,
+- `memberPaymentTypeId` is a code or a word. The codes read here are `PAY`
+  (a payment), `CHG` (a charge) and `DIS` (a discount); any other code is
+  not known. `paymentSubType` narrows it (such as `MEMBER_INT_PMT` or
+  `RECURRING_FEE`). The words the app translates, read here too, are from
+  its own list: the payments (`MemberInitiatedPayment`,
+  `AutomatedPayment`, `ScheduledInstallmentPayment`, `CollectedPayment`,
   `CenterInitiatedPayment`, `CenterInitiatedAdvancePayment`,
   `DirectPaymentToCenterByCheck`, `DirectAdvancePaymentToCenterByCheck`),
   the refunds (`RefundViaCheck`, `Reimbursement`), the discounts
   (`Discount`, `FlatDiscount`, `CenterInitiatedDiscount`,
   `InsuranceDiscount`), `Credit`, `MemberDisputedChargeResolutionProcessInitiated`,
-  and `PastDue`, `BalanceForward` and `Through`. It names no charge: the
-  fees' words are in a translation file not read.
+  and `PastDue`, `BalanceForward` and `Through` (*bundle*).
+- A coded row's `amount` can be a string of a decimal, negative for a
+  payment and positive for a charge. `outstandingBalance` and
+  `transactionStatus` are optional.
+- `timestamp`, `billingCycleStartDate` and `billingCycleEndDate` are .NET
+  date-times or written out, such as `05 March, 2024 08:15:42` (an invented
+  example). A code field can hold the text `N/A`, which is read as no code.
 - `UpComingBills` answers one object, `{nextPaymentAmount, freezeDate,
   nextPaymentDate}`. The app asks for it only when the token's
   `MemberType` is `CRY` (embryos in storage), ignores a failure, and shows
@@ -273,25 +281,51 @@ How the answers are read (`src/reads.rs`):
   fee (`recurringFeeName` or `oneTimeFeeName`). One that names no fee is of
   a type not known: neither a bill nor a payment, a warning naming its type
   on every reader, and an `Invoice` skip in `records export`.
-- An amount is a JSON number of at most two decimals. A string, an
-  exponent or a third decimal is exit 5 naming the field
+- An amount is a JSON number of at most two decimals, or a string of one
+  (a sign, digits, a point, one or two digits). A grouped or currency
+  string, an exponent or a third decimal is exit 5 naming the field
   (`MemberPaymentHistoryAll.data.amount`), never with its value. Payments,
   refunds, discounts and credits are read as positive amounts, whatever
   their sign.
-- A date is its first ten characters, when they are a day. .NET's empty
-  date, `0001-01-01`, is no date.
+- A date is its first ten characters, when they are a day, or written out
+  (`05 March, 2024 08:15:42`). .NET's empty date, `0001-01-01`, is no
+  date, and `01 January, 0001 00:00:00` is the same.
 - A charge's date of service is its billing period's start, else the day it
   was posted (`timestamp`); its period's end is the period's.
 - `outstandingBalance` is read as what is still owed on a charge: above 0
   is an open bill (`bills list --open`). When the open charges'
   outstanding balances do not add up to the account's `billingBalance`,
   `accounts list` and `bills list` warn and `records export` is exit 5.
+- A coded `PAY` row with a positive amount, or whose subtype says refund,
+  reversal, chargeback or void, is a refund; a coded `CHG` row with a
+  negative amount is a credit. A row of any other code that names no fee is
+  of a type not known (above).
 - A charge is voided when its `transactionStatus` says void or cancel.
-- A payment settled unless its card was turned down (`DEC`, `EXP`, `INV`,
-  `ERR`) or its `transactionStatus` says it was declined, failed,
-  rejected, voided, expired, cancelled, returned, bounced or charged back.
-  `payments list` shows every payment with `settled`; `records export`
-  writes only the settled ones and counts the rest in one skip.
+- `outstandingBalance` is optional. Without one on any charge, no row says
+  whether its bill is open. When the account's `billingBalance` is 0 every charge is
+  owed 0; when it is above 0 and no charge says what is owed on it,
+  `accounts list` and `bills list` warn, the charges' `owes` is null and
+  `records export` is exit 5, writing nothing.
+- A payment is settled only on positive evidence (`Row::settlement`). The
+  states are decided in this order:
+  1. `failed`: its card was turned down (`DEC`, `EXP`, `INV`, `ERR`), or its
+     status says so (such as declined, denied, failed, rejected, voided,
+     expired, cancelled, returned, bounced, charged back, unauthorized,
+     error). This outranks a date after today.
+  2. `scheduled`: dated after the local day, whatever its status says. The
+     app's "next scheduled payment" is never a payment made.
+  3. `pending`: a status such as pending, scheduled, submitted, authorized,
+     settling, processing, awaiting, hold, initiated, queued, unsettled or
+     partial.
+  4. `settled`: a status of settled, complete, completed, paid, captured or
+     succeeded; or, with no status, an accepted card (`ACC`), or a type the
+     clinic records itself (a check, a clinic-initiated or collected
+     payment, a refund, a discount or a credit) with no card result.
+  5. `unconfirmed`: anything else.
+  `payments list` shows each with `settled` (true only for the `settled`
+  state) and `state`, which is the one to read. `records export` writes
+  only the settled payments and counts the rest in one `not_settled` skip,
+  by state.
 - The method is worded as the app words it: the card's type (`Visa`),
   `Credit Card`, `PayPal` or `Check`. The card's and the bank account's
   digits are never read.
@@ -303,28 +337,22 @@ How the answers are read (`src/reads.rs`):
 Each of these is the reading of the JavaScript alone, to check against the
 first signed-in answers:
 
-- the words `memberPaymentTypeId` takes for a charge (a storage fee, a
-  notice fee, an admin fee), that every charge names its fee, and that
-  every other word is in the app's list (a row of a word outside it that
-  names no fee draws a warning naming the word);
-- whether `amount` and `billingBalance` are in dollars, as decimals, and
-  the sign of a payment's `amount`;
-- whether `outstandingBalance` on a charge is what is owed on that charge
-  or the account's running balance after the row, and so whether the open
-  charges add up to `billingBalance`;
+- every code `memberPaymentTypeId` takes, and every value of
+  `paymentSubType`;
+- what a positive `PAY` row or a negative `CHG` row means;
+- what `ACC` covers beyond a card the processor accepted;
+- whether `outstandingBalance`, where given, is what is owed on each charge;
 - whether `adminFeeBalance` is part of `billingBalance`;
 - whether `allocationDiscountAmount` is taken off the charge's `amount` or
   shown beside it;
 - whether `BalanceForward` and `PastDue` are rows of the history (a balance
   carried in from before is owed money, read here as no bill) or only
   labels;
-- the values of `transactionStatus`, and whether a declined card payment
-  stays in the history;
-- the format of `timestamp` and of the billing period's dates;
+- whether a declined card payment stays in the history, and the values of
+  `transactionStatus`;
 - whether `MemberPaymentHistoryAll` without `pageSize` answers every row,
   and whether it caps `pageSize` below 50;
-- whether `MemberIvfCenter` answers this member type, and what
-  `UpComingBills` answers a member who is not `CRY`.
+- what `UpComingBills` answers for each member type.
 
 ## What `api` refuses
 
