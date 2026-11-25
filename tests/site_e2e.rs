@@ -1485,7 +1485,7 @@ fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
     assert_eq!(
         warnings
             .iter()
-            .filter(|w| w.contains("add to 509.29") && w.contains("571.90 owed"))
+            .filter(|w| w.contains("add to 509.29") && w.contains("571.90 owed") && w.contains("not yet been seen"))
             .count(),
         2,
         "{warnings:?}"
@@ -2067,6 +2067,7 @@ fn charges_that_do_not_say_stay_unsaid_unless_the_rest_account_for_the_balance()
         for w in &warnings {
             let says = format!("{account}, and 5 bill(s) do not say what is owed on them");
             assert!(w.starts_with(&says), "{balance}: {w}");
+            assert!(w.contains("exit 5") && !w.contains("not yet been seen"), "{w}");
         }
 
         let mut out = Vec::new();
@@ -2108,6 +2109,7 @@ fn a_balance_below_zero_or_not_given_settles_no_charge() {
         for w in &warnings {
             let says = format!("{account}, and no bill says what is owed on it");
             assert!(w.starts_with(&says), "{balance}: {w}");
+            assert!(w.contains("exit 5") && !w.contains("not yet been seen"), "{w}");
         }
         let mut out = Vec::new();
         let e = readers::export(&site, &server.base, &mut out, None, None, None)

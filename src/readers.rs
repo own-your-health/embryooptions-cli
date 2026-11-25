@@ -320,10 +320,16 @@ impl Book {
 /// say is owed; a warning says when they differ, or when a bill does not say.
 fn warn_mismatch(site: &Site, book: &Book) {
     if let Some(m) = book.balance_mismatch() {
-        site.warn(format!(
-            "{m}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
-             seen to confirm"
-        ));
+        let why = if book.unsaid() > 0 {
+            "a bill that gives no `outstandingBalance` has a null `owes`, and `records export` writes nothing (exit 5)"
+                .to_string()
+        } else {
+            format!(
+                "{BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been seen \
+                 to confirm"
+            )
+        };
+        site.warn(format!("{m}: {why}"));
     }
 }
 
@@ -680,18 +686,22 @@ pub fn export<W: Write>(
     if book.balance_mismatch().is_some() {
         let (why, shown) = if book.unsaid() > 0 {
             (
-                "a bill does not say what is owed on it, and what the account shows owed does not settle it",
+                "a bill does not say what is owed on it, and what the account shows owed does not settle it"
+                    .to_string(),
                 format!("`{BIN} accounts list` and `{BIN} bills list` show what each says"),
             )
         } else {
             (
-                "the open bills' outstanding balances do not add up to what the account shows owed",
+                format!(
+                    "the open bills' outstanding balances do not add up to what the account shows owed, and {BIN} \
+                     reads `outstandingBalance` as what is owed on each bill, which the API has not yet been seen to \
+                     confirm"
+                ),
                 format!("`{BIN} accounts list` and `{BIN} bills list --open` show both figures"),
             )
         };
         return Err(CliError::Upstream(format!(
-            "{why}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
-             seen to confirm, and writes no stream whose bills would give the wrong balance"
+            "{why}: {BIN} writes no stream whose bills would give the wrong balance"
         ))
         .with_remedy(shown));
     }
