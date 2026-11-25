@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- A scheduled payment never reads as paid. A payment is settled only on
+  positive evidence; one dated after today, pending at the processor, turned
+  down or of a status or type not known is `scheduled`, `pending`, `failed`
+  or `unconfirmed` in `payments list`'s new `state` field, and is counted
+  in `records export`'s `not_settled` skip instead of written. A payment
+  submitted for settlement, or with no status at all, used to be written
+  as paid.
 - While `EMBRYOOPTIONS_KEYCHAIN_SERVICE` names a test's keychain service, a command
   that would send a request without a loopback `EMBRYOOPTIONS_BASE_URL` is exit 2
   before sending it, so a test run never reaches the member API.

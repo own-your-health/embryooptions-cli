@@ -287,11 +287,22 @@ How the answers are read (`src/reads.rs`):
   outstanding balances do not add up to the account's `billingBalance`,
   `accounts list` and `bills list` warn and `records export` is exit 5.
 - A charge is voided when its `transactionStatus` says void or cancel.
-- A payment settled unless its card was turned down (`DEC`, `EXP`, `INV`,
-  `ERR`) or its `transactionStatus` says it was declined, failed,
-  rejected, voided, expired, cancelled, returned, bounced or charged back.
-  `payments list` shows every payment with `settled`; `records export`
-  writes only the settled ones and counts the rest in one skip.
+- A payment is settled only on positive evidence (`Row::settlement`): a
+  `transactionStatus` that says settled, completed, paid, captured or
+  succeeded, or an accepted card (`ACC`) with no status, or a type the
+  clinic records itself (a check, a clinic-initiated or collected payment)
+  with neither. Otherwise it is
+  - `failed`: its card was turned down (`DEC`, `EXP`, `INV`, `ERR`) or its
+    status says declined, failed, rejected, voided, expired, cancelled,
+    returned, bounced or charged back;
+  - `scheduled`: dated after today, whatever its status says (the app's
+    "next scheduled payment" is never a payment made);
+  - `pending`: a status that says authorized, submitted, settling, pending,
+    scheduled or processing;
+  - `unconfirmed`: any other status, or none on a processor's payment.
+  `payments list` shows each with `state` and `settled`; `records export`
+  writes only the settled ones and counts the rest in one `not_settled`
+  skip, by state. A row dated after the local day is never settled.
 - The method is worded as the app words it: the card's type (`Visa`),
   `Credit Card`, `PayPal` or `Check`. The card's and the bank account's
   digits are never read.

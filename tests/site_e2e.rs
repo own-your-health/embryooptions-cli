@@ -1143,6 +1143,69 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
     assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
 }
 
+/// A scheduled payment, one the processor has not finished, and one with no
+/// status are never written as paid.
+#[test]
+fn records_export_never_writes_a_payment_that_has_not_settled() {
+    let mut page: serde_json::Value = serde_json::from_str(HISTORY_2).unwrap();
+    let rows = page["data"].as_array_mut().unwrap();
+    let row = |id: u64, kind: &str, at: &str, status: serde_json::Value| {
+        json!({
+            "id": id,
+            "memberPaymentTypeId": kind,
+            "timestamp": format!("{at}T09:00:00"),
+            "amount": -600.00,
+            "creditCardSystemStatus": null,
+            "transactionStatus": status,
+        })
+    };
+    rows.push(row(901, "ScheduledInstallmentPayment", "2999-01-03", json!("settled")));
+    rows.push(row(
+        902,
+        "AutomatedPayment",
+        "2025-05-01",
+        json!("submitted_for_settlement"),
+    ));
+    rows.push(row(903, "AutomatedPayment", "2025-05-02", json!(null)));
+    let total = 8 + 3;
+    page["total"] = json!(total);
+    let mut page1: serde_json::Value = serde_json::from_str(HISTORY_1).unwrap();
+    page1["total"] = json!(total);
+    let mut routes = reader_routes();
+    routes.insert(page_at(1), ok(&page1.to_string()));
+    routes.insert(page_at(2), ok(&page.to_string()));
+    let server = serve(routes);
+    let env = reader_env(&server, "unsettled");
+    let site = Site::open(&env, &adult1()).unwrap();
+
+    let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
+    let state = |id: &str| {
+        let r = v["items"].as_array().unwrap().iter().find(|r| r["id"] == id).unwrap();
+        (
+            r["state"].as_str().unwrap().to_string(),
+            r["settled"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(state("901"), ("scheduled".into(), false));
+    assert_eq!(state("902"), ("pending".into(), false));
+    assert_eq!(state("903"), ("unconfirmed".into(), false));
+    assert_eq!(state("502"), ("settled".into(), true));
+
+    let mut out = Vec::new();
+    readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    let lines = stream_of(&out);
+    let ids: Vec<_> = of_type(&lines, "PaymentReconciliation")
+        .iter()
+        .map(|p| p["id"].clone())
+        .collect();
+    assert_eq!(ids, [json!("payment-502")]);
+    let skipped = lines.last().unwrap()["skipped"].to_string();
+    assert!(
+        skipped.contains("2 scheduled or pending and 1 not shown to have settled"),
+        "{skipped}"
+    );
+}
+
 /// The member API takes no date, so `--since` drops nothing: the header
 /// names every type unbounded (DESIGN §1). An annual fee whose period
 /// began before `since` and was paid after it still arrives `balanced`.

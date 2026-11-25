@@ -188,6 +188,33 @@ pub struct Row {
     pub transaction_status: Option<String>,
 }
 
+/// Where a payment stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Settlement {
+    /// The money moved.
+    Settled,
+    /// Dated after today: the app's "next scheduled payment", not a payment.
+    Scheduled,
+    /// The processor has it and has not finished.
+    Pending,
+    /// The card was turned down, or it was voided, returned or failed.
+    Failed,
+    /// A status or type this reader does not know, so not said to be paid.
+    Unconfirmed,
+}
+
+impl Settlement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Settlement::Settled => "settled",
+            Settlement::Scheduled => "scheduled",
+            Settlement::Pending => "pending",
+            Settlement::Failed => "failed",
+            Settlement::Unconfirmed => "unconfirmed",
+        }
+    }
+}
+
 impl Row {
     /// The first day of service: the period's start, else the posting day.
     pub fn service_start(&self) -> Option<&str> {
@@ -206,10 +233,11 @@ impl Row {
         })
     }
 
-    /// Whether the money moved: not a card the processor turned down, and
-    /// no processor status saying it failed.
-    pub fn is_settled(&self) -> bool {
-        const NOT: &[&str] = &[
+    /// Where the payment stands on `today` (`YYYY-MM-DD`). Only positive
+    /// evidence makes it [`Settlement::Settled`]; a status, card result or
+    /// type not known to be a finished payment never reads as paid.
+    pub fn settlement(&self, today: &str) -> Settlement {
+        const FAILED: &[&str] = &[
             "declin",
             "fail",
             "reject",
@@ -221,13 +249,82 @@ impl Row {
             "chargeback",
             "error",
         ];
-        let card_ok = self.card_status.as_deref().is_none_or(|s| {
-            !["DEC", "EXP", "INV", "ERR"]
-                .iter()
-                .any(|bad| s.eq_ignore_ascii_case(bad))
-        });
-        let s = self.transaction_status.as_deref().unwrap_or("").to_ascii_lowercase();
-        card_ok && !NOT.iter().any(|n| s.contains(n))
+        // Before the settled words: `settlement_pending` is not a settlement.
+        const PENDING: &[&str] = &[
+            "pend",
+            "schedul",
+            "submit",
+            "settling",
+            "process",
+            "await",
+            "hold",
+            "authoriz",
+            "initiat",
+            "queued",
+            "unsettled",
+            "partial",
+        ];
+        const SETTLED: &[&str] = &[
+            "settled",
+            "complete",
+            "completed",
+            "paid",
+            "captured",
+            "success",
+            "succeeded",
+            "successful",
+        ];
+        // Types the clinic records itself, and the rows that pay nothing out
+        // (a refund, a discount, a credit): the row is the clinic's statement
+        // (*bundle*). A payment through the processor needs its status.
+        const RECORDED: &[&str] = &[
+            "DirectPaymentToCenterByCheck",
+            "DirectAdvancePaymentToCenterByCheck",
+            "CenterInitiatedPayment",
+            "CenterInitiatedAdvancePayment",
+            "CollectedPayment",
+        ];
+        let status = self
+            .transaction_status
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        let card = self.card_status.as_deref().unwrap_or("").trim();
+        if ["DEC", "EXP", "INV", "ERR"]
+            .iter()
+            .any(|bad| card.eq_ignore_ascii_case(bad))
+            || FAILED.iter().any(|n| status.contains(n))
+        {
+            return Settlement::Failed;
+        }
+        // A date after today cannot have been paid, whatever the status says.
+        if self.date.as_deref().is_some_and(|d| d > today) {
+            return Settlement::Scheduled;
+        }
+        if PENDING.iter().any(|n| status.contains(n)) {
+            return Settlement::Pending;
+        }
+        if status.is_empty() {
+            let recorded = || {
+                let t = self.type_id.as_deref().unwrap_or("").trim();
+                self.kind != Kind::Payment || RECORDED.iter().any(|r| r.eq_ignore_ascii_case(t))
+            };
+            return if card.eq_ignore_ascii_case("ACC") || (card.is_empty() && recorded()) {
+                Settlement::Settled
+            } else {
+                Settlement::Unconfirmed
+            };
+        }
+        if SETTLED.contains(&status.as_str()) {
+            return Settlement::Settled;
+        }
+        Settlement::Unconfirmed
+    }
+
+    /// Whether the money moved by `today`: [`Settlement::Settled`].
+    pub fn is_settled(&self, today: &str) -> bool {
+        self.settlement(today) == Settlement::Settled
     }
 
     /// What it was: the fee's name, else the note, else the type.
@@ -605,29 +702,55 @@ mod tests {
     }
 
     #[test]
-    fn a_payment_settles_unless_the_processor_turned_it_down() {
-        let r = |card: Option<&str>, status: Option<&str>| Row {
+    fn only_a_positively_settled_payment_reads_as_paid() {
+        let today = "2020-06-15";
+        let r = |type_id: &str, date: &str, card: Option<&str>, status: Option<&str>| Row {
             card_status: card.map(str::to_string),
             transaction_status: status.map(str::to_string),
-            ..row(&json!({"id": 1, "memberPaymentTypeId": "AutomatedPayment"}))
-                .unwrap()
-                .unwrap()
+            date: Some(date.to_string()),
+            ..row(&json!({"id": 1, "memberPaymentTypeId": type_id})).unwrap().unwrap()
         };
-        for (card, status) in [
-            (None, None),
-            (Some("ACC"), Some("settled")),
-            (None, Some("submitted_for_settlement")),
+        let auto = |date: &str, card: Option<&str>, status: Option<&str>| r("AutomatedPayment", date, card, status);
+        let past = "2020-06-01";
+        use Settlement::*;
+        for (row, want) in [
+            (auto(past, Some("ACC"), Some("settled")), Settled),
+            (auto(past, None, Some("Completed")), Settled),
+            (auto(past, Some("ACC"), None), Settled),
+            (r("DirectPaymentToCenterByCheck", past, None, None), Settled),
+            (r("CollectedPayment", today, None, None), Settled),
+            // Not finished: the processor has not settled it.
+            (auto(past, Some("ACC"), Some("submitted_for_settlement")), Pending),
+            (auto(past, None, Some("SETTLING")), Pending),
+            (auto(past, None, Some("settlement_pending")), Pending),
+            (auto(past, None, Some("authorized")), Pending),
+            // Not yet due, whatever the status says.
+            (auto("2020-07-01", Some("ACC"), Some("settled")), Scheduled),
+            (r("ScheduledInstallmentPayment", "2020-07-01", None, None), Scheduled),
+            (r("DirectPaymentToCenterByCheck", "2020-06-16", None, None), Scheduled),
+            // No evidence either way.
+            (auto(past, None, None), Unconfirmed),
+            (r("ScheduledInstallmentPayment", past, None, None), Unconfirmed),
+            (auto(past, Some("XYZ"), None), Unconfirmed),
+            (auto(past, None, Some("some new word")), Unconfirmed),
+            // Turned down.
+            (auto(past, Some("DEC"), None), Failed),
+            (auto(past, Some("err"), None), Failed),
+            (auto(past, None, Some("processor_declined")), Failed),
+            (auto(past, None, Some("settlement_declined")), Failed),
+            (auto(past, None, Some("voided")), Failed),
+            (auto(past, None, Some("gateway_rejected")), Failed),
         ] {
-            assert!(r(card, status).is_settled(), "{card:?} {status:?}");
-        }
-        for (card, status) in [
-            (Some("DEC"), None),
-            (Some("err"), None),
-            (None, Some("processor_declined")),
-            (None, Some("voided")),
-            (None, Some("gateway_rejected")),
-        ] {
-            assert!(!r(card, status).is_settled(), "{card:?} {status:?}");
+            assert_eq!(
+                row.settlement(today),
+                want,
+                "{:?} {:?} {:?} {:?}",
+                row.type_id,
+                row.date,
+                row.card_status,
+                row.transaction_status
+            );
+            assert_eq!(row.is_settled(today), want == Settled);
         }
     }
 

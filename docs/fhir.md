@@ -70,7 +70,7 @@ can still tell a bill the site no longer lists (DESIGN §1.10):
 
 | Left out | Skip code |
 |---|---|
-| payments whose card the processor turned down, or whose status says failed, voided or returned | `not_settled` |
+| payments turned down (declined, failed, voided), scheduled or pending, or not shown to have settled (`docs/api.md`), counted by state | `not_settled` |
 | payments without an id, a date or an amount | `unreadable` |
 | refunds, discounts and credits: the bill mapping has no resource for them | `unsupported` |
 | rows that move no money (a dispute opened, a balance carried forward) | `unsupported` |

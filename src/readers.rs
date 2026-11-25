@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use crate::bill::{self, id_of, Cents, Mapper};
 use crate::cli::{DownloadArgs, BIN};
 use crate::portal::{now_rfc3339, Site};
-use crate::reads::{self, ClinicInfo, Kind, Member, Row};
+use crate::reads::{self, ClinicInfo, Kind, Member, Row, Settlement};
 
 /// `meta.source` on every resource embryooptions maps.
 pub const META_SOURCE: &str = "embryooptions:site";
@@ -436,11 +436,19 @@ pub const CHARGE_COLUMNS: &[&str] = &["date", "code", "description", "amount"];
 /// takes off.
 const PAID: &[Kind] = &[Kind::Payment, Kind::Refund, Kind::Discount, Kind::Credit];
 
+/// The local day, which a payment cannot have settled after.
+fn today() -> String {
+    pk_cli_core::dates::fmt_iso(pk_cli_core::dates::today_local())
+}
+
 /// `payments list` (payment-list/v1): payments, refunds, discounts and
-/// credits, newest first, with whether each settled.
+/// credits, newest first, with where each stands: `settled` only when the
+/// answer shows the money moved, `scheduled` for a date after today,
+/// `pending`, `failed`, or `unconfirmed`.
 pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> {
     let range = &padded(range)?;
     let book = book(site)?;
+    let today = today();
     let items = book
         .rows
         .iter()
@@ -455,14 +463,15 @@ pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> 
                 "amount": money(r.amount),
                 "method": r.method,
                 "note": r.note,
-                "settled": r.is_settled(),
+                "settled": r.is_settled(&today),
+                "state": r.settlement(&today).as_str(),
             })
         })
         .collect();
     Ok(list("payment", limited(items, range)))
 }
 
-pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "settled"];
+pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "state"];
 
 // ------------------------------------------------------------ documents
 
@@ -674,13 +683,27 @@ pub fn export<W: Write>(
                 format!("{unknown} row(s) of the billing history of a type the bill mapping does not know, naming no fee, may be bills"),
             ));
         }
-        let (mut unsettled, mut undated) = (0, 0);
+        // Only a settled payment is a payment made: a scheduled, pending,
+        // failed or unconfirmed one is counted, never written as paid.
+        let today = today();
+        let (mut failed, mut waiting, mut unconfirmed, mut undated) = (0, 0, 0, 0);
         let mut payments: Vec<&Row> = book.of(Kind::Payment).collect();
         payments.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
         for r in payments {
-            if !r.is_settled() {
-                unsettled += 1;
-                continue;
+            match r.settlement(&today) {
+                Settlement::Settled => {}
+                Settlement::Failed => {
+                    failed += 1;
+                    continue;
+                }
+                Settlement::Scheduled | Settlement::Pending => {
+                    waiting += 1;
+                    continue;
+                }
+                Settlement::Unconfirmed => {
+                    unconfirmed += 1;
+                    continue;
+                }
             }
             let Some(model) = reads::payment(account, r) else {
                 undated += 1;
@@ -691,9 +714,12 @@ pub fn export<W: Write>(
         undated += book.unidentified.iter().filter(|k| **k == Kind::Payment).count();
         skip_count(
             &mut w,
-            unsettled,
+            failed + waiting + unconfirmed,
             "not_settled",
-            format!("{unsettled} payment(s) the processor turned down (declined, failed, voided) were left out"),
+            format!(
+                "{failed} payment(s) turned down (declined, failed, voided), {waiting} scheduled or pending and \
+                 {unconfirmed} not shown to have settled were left out"
+            ),
         );
         skip_count(
             &mut w,
