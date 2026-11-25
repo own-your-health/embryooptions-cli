@@ -7,19 +7,18 @@ and the payments made. Each clinic has its own web app on
 `<clinic>.embryooptions.com`; all of them call one member API,
 `member-api.prod.embryooptions.com`, with the member's access token.
 `embryooptions` signs in per profile through the clinic's web app, reads
-that API, and emits FHIR for the household's medical-records system
+that API, and emits FHIR for a personal medical-records store
 (`records-stream/v1`, `medrec import --from embryooptions`). It conforms to
 piekstra-cli/1 and the `health-records/v1` profile, on the `pk-cli-*` crates
 from [cli-common](https://github.com/piekstra/cli-common) and
 `pk-med-records` from [medical-common](https://github.com/own-your-health/medical-common).
 Every `pk-cli-*` stays on the cli-common tag medical-common pins.
 
-Status: sign-in, sessions, the token refresh and `api` are built, tested
-offline and seen working against the site. The readers are built on the
-web app's JavaScript and tested against synthetic answers. `docs/api.md`
-marks what was seen *observed*, what is read from the JavaScript alone
-*bundle*, and lists what the first real read must confirm (Not yet
-observed).
+Status: the sign-in, sessions, the token refresh, `api` and the readers
+are built, tested offline against synthetic answers and work against the
+site. `docs/api.md` marks a field seen on the site *observed* and one read
+from the JavaScript alone *bundle*, and lists what is not confirmed (Open
+questions).
 
 ## Layout
 
@@ -40,18 +39,17 @@ observed).
 
 ## Medical data rules
 
-These come from the household's plan and are not negotiable.
+These are not negotiable.
 
 - The repository carries no personal data, in code, fixtures, docs, commits,
-  pull requests or issues: no user names, member ids, tokens, the clinic the
-  household uses, names, amounts, freeze dates or dates of service. Test
+  pull requests or issues: no user names, member ids, tokens, a real
+  person's clinic, names, amounts, freeze dates or dates of service. Test
   data is synthetic (`exampleclinic`, member 4242); `tests/no_personal_data.rs`
   scans every tracked file for the shapes personal data takes.
 - Records and their contents are never sent to an outside service: no
   health-data aggregator, cloud OCR or other company's API. A Claude session
-  is not one of these (the household's decision, 2026-11-17). A session may
-  read, print and summarize the household's real bills when the work needs
-  it: debugging a real export, mapping the API with real answers, checking
+  working for the records' owner is not one of these. It may read, print
+  and summarize the owner's real bills when the work needs it: debugging a real export, mapping the API with real answers, checking
   a pull. Real data stays out of tracked files, commits, pull requests and
   issues. A raw capture is deleted from `/tmp` once it has served.
 - No FHIR or SMART libraries, no aggregators. The FHIR here is mapped by

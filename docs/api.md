@@ -16,9 +16,9 @@ with the signed-in member's access token. embryooptions reads that API with
 Status: a field, header or answer seen on the site itself is marked
 *observed*. What comes from the web app's JavaScript alone, the code
 every visitor's browser downloads, is marked *bundle*. The readers
-(`accounts`, `bills`, `payments`, `records export`) are built on that
-reading and tested against synthetic answers of the same shape; [Not yet
-observed](#not-yet-observed) lists what a signed-in read must confirm.
+(`accounts`, `bills`, `payments`, `records export`) work against the site
+and are tested against synthetic answers; [Open questions](#open-questions)
+lists what is not confirmed.
 
 ## Where it is
 
@@ -331,10 +331,10 @@ How the answers are read (`src/reads.rs`):
 - A row without an `id` cannot be placed: `records export` counts it in a
   skip.
 
-### Not yet observed
+### Open questions
 
-Each of these is the reading of the JavaScript alone, to check against the
-first signed-in answers:
+Each of these is read from the JavaScript alone and is not confirmed on the
+site:
 
 - every code `memberPaymentTypeId` takes, and every value of
   `paymentSubType`;

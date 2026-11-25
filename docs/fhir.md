@@ -1,13 +1,13 @@
 # The FHIR embryooptions writes
 
-`records export` is built on the reading of the web app's code
-(`docs/api.md`, *bundle*) and tested against synthetic answers; what a
-signed-in read must still confirm is in `docs/api.md`, Not yet observed.
+`records export` maps what the readers read (`docs/api.md`) and is tested
+against synthetic answers; what is not confirmed on the site is in
+`docs/api.md`, Open questions.
 
 `records export --ndjson` writes `records-stream/v1` (medical-common's
 `health-records/v1` profile) with `method: portal`: what the API answers,
 mapped by hand to FHIR R4 in `src/bill.rs`. `src/bill.rs` is the model the
-household's billing CLIs share: the same file is in peryourhealth-cli and
+billing CLIs share: the same file is in peryourhealth-cli and
 flywire-cli, and it needs serde_json's `arbitrary_precision`. Every
 resource carries `meta.source` `embryooptions:site` and a tag saying it was
 mapped. Ids are stable across runs, derived from the site's own numbers, so
