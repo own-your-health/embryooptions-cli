@@ -177,8 +177,9 @@ fn warn_unknown(site: &Site, rows: &[Row], unidentified: &[Kind]) {
 pub fn book(site: &Site) -> Result<Book, CliError> {
     let member = reads::member(&site.read(MEMBER_PATH)?)?;
     let clinic = clinic(site)?;
-    let (rows, unidentified) = history(site)?;
+    let (mut rows, unidentified) = history(site)?;
     warn_unknown(site, &rows, &unidentified);
+    settle_by_balance(&member, &mut rows);
     let slug = site.clinic().slug().to_string();
     let organization_name = clinic
         .name
@@ -204,6 +205,19 @@ pub fn book(site: &Site) -> Result<Book, CliError> {
     })
 }
 
+/// The live history's charges carry no `outstandingBalance` (*observed*), so
+/// nothing in a row says whether a bill is open. An account whose balance is
+/// zero owes nothing on any bill: each charge is owed 0. With a balance above
+/// zero, what is open on which bill is not known, and is left unsaid.
+fn settle_by_balance(member: &Member, rows: &mut [Row]) {
+    let none_says = !rows.iter().any(|r| r.kind == Kind::Charge && r.outstanding.is_some());
+    if none_says && member.balance.is_some_and(|b| b.0 == 0) {
+        for r in rows.iter_mut().filter(|r| r.kind == Kind::Charge) {
+            r.outstanding = Some(Cents(0));
+        }
+    }
+}
+
 impl Book {
     fn provider(&self) -> bill::Provider {
         bill::Provider {
@@ -221,7 +235,18 @@ impl Book {
     /// account shows owed, what each says: the sign that
     /// `outstandingBalance` is not what is owed on each bill.
     pub fn balance_mismatch(&self) -> Option<String> {
-        let (owed, balance) = (self.owed_on_bills()?, self.member.balance?);
+        let balance = self.member.balance?;
+        let Some(owed) = self.owed_on_bills() else {
+            // No bill says what is owed on it, and the account owes: which
+            // bills are open is not known (an account that owes nothing
+            // settles every bill, `settle_by_balance`).
+            return (balance.0 > 0 && self.of(Kind::Charge).next().is_some()).then(|| {
+                format!(
+                    "the account shows {} owed, and no bill says what is owed on it",
+                    balance.decimal()
+                )
+            });
+        };
         (owed != balance).then(|| {
             format!(
                 "the open bills' outstanding balances add to {}, and the account shows {} owed",
@@ -460,6 +485,7 @@ pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> 
                 "date": r.date,
                 "kind": r.kind.as_str(),
                 "type": r.type_id,
+                "subtype": r.sub_type,
                 "amount": money(r.amount),
                 "method": r.method,
                 "note": r.note,
@@ -471,7 +497,7 @@ pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> 
     Ok(list("payment", limited(items, range)))
 }
 
-pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "state"];
+pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "settled", "state"];
 
 // ------------------------------------------------------------ documents
 

@@ -83,8 +83,10 @@ impl Kind {
     }
 }
 
-/// The app's payment types (`useBillingHistory`'s enum, *bundle*).
+/// The app's payment types: the words of `useBillingHistory`'s enum
+/// (*bundle*), and the three-letter codes the API answers (*observed*).
 const PAYMENTS: &[&str] = &[
+    "PAY",
     "MemberInitiatedPayment",
     "AutomatedPayment",
     "ScheduledInstallmentPayment",
@@ -96,12 +98,15 @@ const PAYMENTS: &[&str] = &[
 ];
 const REFUNDS: &[&str] = &["RefundViaCheck", "Reimbursement"];
 const DISCOUNTS: &[&str] = &[
+    "DIS",
     "Discount",
     "FlatDiscount",
     "CenterInitiatedDiscount",
     "InsuranceDiscount",
 ];
 const CREDITS: &[&str] = &["Credit"];
+/// A charge, whatever it names (*observed*: `CHG`).
+const CHARGES: &[&str] = &["CHG"];
 /// The enum's other members: a dispute opened, and labels of a statement
 /// (a balance carried forward, past due, a period's end).
 const OTHERS: &[&str] = &[
@@ -112,7 +117,8 @@ const OTHERS: &[&str] = &[
 ];
 
 /// The kind of a row of type `type_id`, in any case, that names a fee
-/// (`recurringFeeName` or `oneTimeFeeName`) or not. The bundle names every
+/// (`recurringFeeName` or `oneTimeFeeName`) or not. `CHG` is a charge by
+/// itself (*observed*). The bundle names every
 /// type that is not a charge, and none that is, so a charge is a row of
 /// another type that names its fee. A row of another type that names none
 /// is [`Kind::Unknown`]: a type the provider adds later (a reversal, a
@@ -130,7 +136,7 @@ pub fn kind_of(type_id: Option<&str>, names_a_fee: bool) -> Kind {
         Kind::Credit
     } else if is(OTHERS) {
         Kind::Other
-    } else if names_a_fee {
+    } else if is(CHARGES) || names_a_fee {
         Kind::Charge
     } else {
         Kind::Unknown
@@ -182,6 +188,8 @@ pub struct Row {
     /// `Credit Card`, `PayPal` or `Check`. Never the card's or account's
     /// digits.
     pub method: Option<String>,
+    /// `paymentSubType` (*observed*: `MEMBER_INT_PMT`, `RECURRING_FEE`).
+    pub sub_type: Option<String>,
     /// `creditCardSystemStatus`: `ACC` accepted, `DEC`, `EXP`, `INV`, `ERR`.
     pub card_status: Option<String>,
     /// `transactionStatus`, as the payment processor words it.
@@ -239,15 +247,17 @@ impl Row {
     pub fn settlement(&self, today: &str) -> Settlement {
         const FAILED: &[&str] = &[
             "declin",
+            "denied",
             "fail",
             "reject",
             "void",
-            "expired",
+            "expire",
             "cancel",
             "return",
             "bounce",
             "chargeback",
             "error",
+            "unauthor",
         ];
         // Before the settled words: `settlement_pending` is not a settlement.
         const PENDING: &[&str] = &[
@@ -367,25 +377,33 @@ fn shape(what: &str) -> CliError {
     ))
 }
 
-/// An amount at `v[key]`: a JSON number with at most two decimals, `what`
-/// naming it in an error, which never quotes it.
+/// An amount at `v[key]`: a JSON number, or a string of one (the live API
+/// sends the billing history's amounts as `"125.00"`, *observed*), with at
+/// most two decimals. `what` names it in an error, which never quotes it.
 fn money(v: &Value, key: &str, what: &str) -> Result<Option<Cents>, CliError> {
-    match v.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::Number(n)) => {
-            let text = n.to_string();
-            match Cents::parse(&text) {
-                // Ten trillion: beyond any bill, and no sum overflows.
-                Some(c) if c.0.unsigned_abs() < 1_000_000_000_000_000 && !text.contains(['e', 'E']) => Ok(Some(c)),
-                _ => Err(shape(&format!("{what}.{key} (an amount with more than two decimals)"))),
-            }
-        }
-        Some(_) => Err(shape(&format!("{what}.{key} (an amount that is not a number)"))),
+    let text = match v.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Number(n)) => n.to_string(),
+        Some(Value::String(s)) if plain_decimal(s) => s.clone(),
+        Some(_) => return Err(shape(&format!("{what}.{key} (an amount that is not a number)"))),
+    };
+    match Cents::parse(&text) {
+        // Ten trillion: beyond any bill, and no sum overflows.
+        Some(c) if c.0.unsigned_abs() < 1_000_000_000_000_000 && !text.contains(['e', 'E']) => Ok(Some(c)),
+        _ => Err(shape(&format!("{what}.{key} (an amount with more than two decimals)"))),
     }
 }
 
-fn positive(v: &Value, key: &str, what: &str) -> Result<Option<Cents>, CliError> {
-    Ok(money(v, key, what)?.map(|c| Cents(c.0.abs())))
+/// `125`, `-125.00`: digits, an optional sign and one decimal point with one
+/// or two digits after it. No separators, spaces or currency.
+fn plain_decimal(s: &str) -> bool {
+    let s = s.strip_prefix('-').unwrap_or(s);
+    let (whole, frac) = s.split_once('.').unwrap_or((s, "0"));
+    !whole.is_empty()
+        && whole.len() <= 13
+        && whole.bytes().all(|b| b.is_ascii_digit())
+        && (1..=2).contains(&frac.len())
+        && frac.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// Text at `v[key]`: a string, trimmed, or a number written out.
@@ -400,9 +418,43 @@ fn text(v: &Value, key: &str) -> Option<String> {
 /// The day of a .NET date-time at `v[key]`; .NET's empty date is none.
 fn day(v: &Value, key: &str) -> Option<String> {
     let s = text(v, key)?;
-    let d = s.get(..10)?;
-    pk_cli_core::dates::parse_iso(d).ok()?;
-    (!d.starts_with("0001-")).then(|| d.to_string())
+    let d = match s.get(..10).filter(|d| pk_cli_core::dates::parse_iso(d).is_ok()) {
+        Some(d) => d.to_string(),
+        None => written_out(&s)?,
+    };
+    (!d.starts_with("0001-")).then_some(d)
+}
+
+/// `05 March, 2024 08:15:42` (*observed*), or the same without a time, as
+/// `2024-03-05`. `None` for anything else, a day the month does not have
+/// included.
+fn written_out(s: &str) -> Option<String> {
+    const MONTHS: [&str; 12] = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    let (day, rest) = s.trim().split_once(' ')?;
+    let (month, rest) = rest.trim_start().split_once(',')?;
+    let year = rest.split_whitespace().next()?;
+    let n = MONTHS.iter().position(|m| m.eq_ignore_ascii_case(month.trim()))? + 1;
+    let digits = |t: &str, most: usize| !t.is_empty() && t.len() <= most && t.bytes().all(|b| b.is_ascii_digit());
+    if !digits(day, 2) || !digits(year, 4) || year.len() != 4 {
+        return None;
+    }
+    let (y, d): (u32, u32) = (year.parse().ok()?, day.parse().ok()?);
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][n - 1];
+    (1..=days).contains(&d).then(|| format!("{year}-{n:02}-{d:02}"))
 }
 
 // ------------------------------------------------------------ answers
@@ -471,13 +523,30 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
     let Some(id) = text(r, "id") else {
         return Ok(None);
     };
-    let amount = match kind {
-        Kind::Charge | Kind::Other | Kind::Unknown => money(r, "amount", at)?,
-        _ => positive(r, "amount", at)?,
+    let sub_type = text(r, "paymentSubType");
+    let signed = money(r, "amount", at)?;
+    // A coded row's sign says which way the money went (*observed*: a payment
+    // is negative, a charge positive). One the other way is not what its code
+    // says: money paid back, or a charge taken off.
+    let code = type_id.as_deref().unwrap_or("").trim();
+    let reversed = sub_type.as_deref().is_some_and(|t| {
+        let t = t.to_ascii_uppercase();
+        ["REFUND", "REVERS", "CHARGEBACK", "VOID"].iter().any(|w| t.contains(w))
+    });
+    let kind = match (kind, signed) {
+        (Kind::Payment, Some(a)) if code.eq_ignore_ascii_case("PAY") && (a.0 > 0 || reversed) => Kind::Refund,
+        (Kind::Charge, Some(a)) if code.eq_ignore_ascii_case("CHG") && a.0 < 0 => Kind::Credit,
+        (kind, _) => kind,
     };
+    let amount = match kind {
+        Kind::Charge | Kind::Other | Kind::Unknown => signed,
+        _ => signed.map(|c| Cents(c.0.abs())),
+    };
+    // `cptcode2` and `cptcode3` can hold a diagnosis or the text `N/A`.
     let codes = ["cptcode1", "cptcode2", "cptcode3"]
         .iter()
         .filter_map(|k| text(r, k))
+        .filter(|c| !c.eq_ignore_ascii_case("N/A") && !c.eq_ignore_ascii_case("NA"))
         .collect();
     let lab = r.get("ivfCenterLab");
     Ok(Some(Row {
@@ -502,6 +571,7 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
         tax_id: lab.and_then(|l| text(l, "taxId")),
         codes,
         method: method(r),
+        sub_type,
         card_status: text(r, "creditCardSystemStatus"),
         transaction_status: text(r, "transactionStatus"),
     }))
@@ -659,12 +729,39 @@ mod tests {
         }
         assert_eq!(money(&json!({"a": null}), "a", "x").unwrap(), None);
         assert_eq!(money(&json!({}), "a", "x").unwrap(), None);
-        assert_eq!(positive(&number("-40.00"), "a", "x").unwrap(), Some(Cents(4000)));
-        for bad in ["12.345", "1e3", "\"12.50\"", "1e300"] {
+        // The live API's history spells an amount as a string (*observed*).
+        for (text, cents) in [
+            ("\"125.00\"", 12500),
+            ("\"-600.00\"", -60000),
+            ("\"7\"", 700),
+            ("\"0.5\"", 50),
+        ] {
+            assert_eq!(money(&number(text), "a", "x").unwrap(), Some(Cents(cents)), "{text}");
+        }
+        for bad in [
+            "12.345",
+            "1e3",
+            "1e300",
+            "\"12.345\"",
+            "\"1e3\"",
+            "\"1,000.00\"",
+            "\"$5\"",
+            "\" 5\"",
+            "\"+5\"",
+            "\".5\"",
+            "\"5.\"",
+            "\"-\"",
+            "\"\"",
+            "true",
+            "{}",
+        ] {
             let e = money(&number(bad), "a", "MemberPaymentHistoryAll.data").err().unwrap();
             assert_eq!(e.exit_code(), 5, "{bad}");
             assert!(e.to_string().contains("MemberPaymentHistoryAll.data.a"), "{e}");
-            assert!(!e.to_string().contains("12.3") && !e.to_string().contains("1e"), "{e}");
+            assert!(
+                !e.to_string().contains("12.3") && !e.to_string().contains("1,000"),
+                "{e}"
+            );
         }
     }
 
@@ -677,6 +774,20 @@ mod tests {
         for none in ["c", "d", "e", "missing"] {
             assert_eq!(day(&v, none), None, "{none}");
         }
+        // The live API writes the history's dates out (*observed*).
+        for (text, want) in [
+            ("05 March, 2024 08:15:42", Some("2024-03-05")),
+            ("5 March, 2024", Some("2024-03-05")),
+            ("29 February, 2028 00:00:00", Some("2028-02-29")),
+            ("01 January, 0001 00:00:00", None),
+            ("31 June, 2026 00:00:00", None),
+            ("29 February, 2026 00:00:00", None),
+            ("5 Mar, 2024 00:00:00", None),
+            ("March 5, 2024", None),
+            ("99 November, 2026", None),
+        ] {
+            assert_eq!(day(&json!({ "a": text }), "a").as_deref(), want, "{text}");
+        }
     }
 
     #[test]
@@ -685,6 +796,12 @@ mod tests {
             (Some("MemberInitiatedPayment"), false, Kind::Payment),
             (Some("automatedpayment"), true, Kind::Payment),
             (Some("DirectPaymentToCenterByCheck"), false, Kind::Payment),
+            // The live API's codes (*observed*).
+            (Some("PAY"), false, Kind::Payment),
+            (Some("CHG"), false, Kind::Charge),
+            (Some("chg"), true, Kind::Charge),
+            (Some("DIS"), false, Kind::Discount),
+            (Some("XYZ"), false, Kind::Unknown),
             (Some("RefundViaCheck"), false, Kind::Refund),
             (Some("FlatDiscount"), true, Kind::Discount),
             (Some("Credit"), false, Kind::Credit),
@@ -733,7 +850,18 @@ mod tests {
             (r("ScheduledInstallmentPayment", past, None, None), Unconfirmed),
             (auto(past, Some("XYZ"), None), Unconfirmed),
             (auto(past, None, Some("some new word")), Unconfirmed),
+            // A refund, discount or credit is the clinic's own record.
+            (r("RefundViaCheck", past, None, None), Settled),
+            (r("FlatDiscount", past, None, None), Settled),
+            (r("Credit", past, None, None), Settled),
+            (r("RefundViaCheck", "2020-07-01", None, None), Scheduled),
+            (r("RefundViaCheck", past, None, Some("returned")), Failed),
+            // A failure outranks a date after today, and a date a pending word.
+            (auto("2020-07-01", Some("DEC"), None), Failed),
+            (auto("2020-07-01", None, Some("pending")), Scheduled),
             // Turned down.
+            (auto(past, None, Some("unauthorized")), Failed),
+            (auto(past, None, Some("authorization_expired")), Failed),
             (auto(past, Some("DEC"), None), Failed),
             (auto(past, Some("err"), None), Failed),
             (auto(past, None, Some("processor_declined")), Failed),
@@ -752,6 +880,34 @@ mod tests {
             );
             assert_eq!(row.is_settled(today), want == Settled);
         }
+    }
+
+    #[test]
+    fn a_coded_row_s_sign_and_subtype_say_which_way_the_money_went() {
+        let kind = |v: Value| {
+            let r = row(&v).unwrap().unwrap();
+            (r.kind, r.amount.map(|c| c.0))
+        };
+        let pay = |amount: &str, sub: &str| json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": amount, "paymentSubType": sub});
+        let chg = |amount: &str| json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": amount});
+        assert_eq!(kind(pay("-600.00", "MEMBER_INT_PMT")), (Kind::Payment, Some(60000)));
+        assert_eq!(kind(pay("600.00", "MEMBER_INT_PMT")), (Kind::Refund, Some(60000)));
+        assert_eq!(kind(pay("-600.00", "CC_REFUND")), (Kind::Refund, Some(60000)));
+        assert_eq!(kind(chg("600.00")), (Kind::Charge, Some(60000)));
+        assert_eq!(kind(chg("-600.00")), (Kind::Credit, Some(60000)));
+        assert_eq!(
+            kind(json!({"id": 1, "memberPaymentTypeId": "PAY"})),
+            (Kind::Payment, None)
+        );
+    }
+
+    #[test]
+    fn a_code_that_names_nothing_is_no_code() {
+        let r = row(&json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": "1.00",
+            "cptcode1": "89346", "cptcode2": "Z00.0", "cptcode3": "N/A"}))
+        .unwrap()
+        .unwrap();
+        assert_eq!(r.codes, ["89346", "Z00.0"]);
     }
 
     #[test]
