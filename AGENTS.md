@@ -48,10 +48,11 @@ These are not negotiable.
   scans every tracked file for the shapes personal data takes.
 - Records and their contents are never sent to an outside service: no
   health-data aggregator, cloud OCR or other company's API. A Claude session
-  working for the records' owner is not one of these. It may read, print
-  and summarize the owner's real bills when the work needs it: debugging a real export, mapping the API with real answers, checking
-  a pull. Real data stays out of tracked files, commits, pull requests and
-  issues. A raw capture is deleted from `/tmp` once it has served.
+  working for the records' owner is not one of these. It may read, print and
+  summarize the owner's real bills when the work needs it: debugging a real
+  export, mapping the API with real answers, checking a pull. Real data
+  stays out of tracked files, commits, pull requests and issues. A raw
+  capture is deleted from `/tmp` once it has served.
 - No FHIR or SMART libraries, no aggregators. The FHIR here is mapped by
   hand in `src/bill.rs`; general-purpose crates are fine.
 - Read-only. Nothing writes to Embryo Options: every request is a `GET` of
