@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- `docs/api.md` states the forms of each field on its own, and the tests cover
+  each form. No change in behavior.
+
 ## 0.1.0
 
 The first release. Licensed under AGPL-3.0-only.
@@ -33,11 +38,10 @@ The first release. Licensed under AGPL-3.0-only.
   pending at the processor, turned down or of a status or type not known is
   `scheduled`, `pending`, `failed` or `unconfirmed` in `payments list`'s
   `state`; `settled` is true only for the `settled` state.
-- The billing history is read in either format (`docs/api.md`): amounts as
-  numbers or strings, dates as .NET date-times or written out, row types as
-  words or codes, and rows with no `outstandingBalance`. An account whose
-  balance is 0 owes 0 on every bill; one that owes, with no bill saying on
-  which, is a warning on the lists and exit 5 in `records export`.
+- The billing history's fields are each read in every form `docs/api.md`
+  lists: an amount as a number or a string, a date as a .NET date-time or
+  written out, a row's type as a word or a code. When no charge says what is
+  owed on it, the account's balance decides.
 - `records export --ndjson` (records-stream/v1): the account, a bill per
   charge and the settled payments as FHIR (`docs/fhir.md`). Payments that
   have not settled are counted by state in a `not_settled` skip, and rows

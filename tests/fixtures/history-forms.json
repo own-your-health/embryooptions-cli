@@ -1,0 +1,286 @@
+{
+  "data": [
+    {
+      "id": 5371,
+      "timestamp": "2022-12-25T23:29:10",
+      "memberPaymentTypeId": "MemberInitiatedPayment",
+      "amount": -316.57,
+      "memberPaymentMethodId": "cr",
+      "memberPaymentMethod": {
+        "type": "Credit Card",
+        "creditCardDetails": {
+          "cardType": "MasterCard",
+          "maskedNumber": "************1111"
+        }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionStatus": "captured",
+      "transactionAuthReference": "dummy-auth-ref"
+    },
+    {
+      "id": 8911,
+      "timestamp": "2019-03-02T08:58:48",
+      "memberPaymentTypeId": "PAY",
+      "amount": -101.47,
+      "cptcode2": "N/A",
+      "billingNote": "Note 4",
+      "memberPaymentMethodId": "cr",
+      "memberPaymentMethod": {
+        "type": "Credit Card",
+        "creditCardDetails": {
+          "cardType": "Discover",
+          "maskedNumber": "************1111"
+        }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionAuthReference": "dummy-auth-ref"
+    },
+    {
+      "id": 5019,
+      "timestamp": "06 June, 2020 09:49:36",
+      "memberPaymentTypeId": "CHG",
+      "amount": -157.20,
+      "billingCycleStartDate": "0001-01-01T00:00:00",
+      "cptcode3": "N/A",
+      "billingNote": "Note 1"
+    },
+    {
+      "id": 8080,
+      "timestamp": "18 September, 2023 03:19:22",
+      "memberPaymentTypeId": "DIS",
+      "amount": -467.41,
+      "discountTypeName": "Discount B",
+      "cptcode1": "N/A"
+    },
+    {
+      "id": 5174,
+      "timestamp": "22 May, 2019 17:16:54",
+      "memberPaymentTypeId": "PAY",
+      "amount": "-21.42",
+      "cptcode2": "N/A",
+      "billingNote": "Note 2",
+      "memberPaymentMethodId": "CR",
+      "transactionStatus": "authorized"
+    },
+    {
+      "id": 3772,
+      "timestamp": "2022-09-27T03:02:38",
+      "memberPaymentTypeId": "CHG",
+      "amount": 860.7,
+      "outstandingBalance": null,
+      "memberFreezeEvent": {
+        "freezeDate": "21 March, 2021 00:00:00"
+      },
+      "cptcode2": "12345",
+      "oneTimeFeeName": "Fee H",
+      "ivfCenterProvider": {
+        "fullName": "Example Provider"
+      }
+    },
+    {
+      "id": 4162,
+      "timestamp": "29 November, 2019 04:22:48",
+      "memberPaymentTypeId": "CenterInitiatedPayment",
+      "amount": -69.47,
+      "billingCycleStartDate": "01 January, 0001 00:00:00",
+      "billingCycleEndDate": "01 January, 0001 00:00:00",
+      "allocationDiscountAmount": "0",
+      "cptcode3": "N/A",
+      "billingNote": "Note 7",
+      "transactionStatus": "returned"
+    },
+    {
+      "id": 6491,
+      "timestamp": "2020-07-28T11:16:59",
+      "memberPaymentTypeId": "ExampleFee",
+      "amount": "67",
+      "billingCycleStartDate": "2020-08-02T00:00:00",
+      "billingCycleEndDate": "30 November, 2020 00:00:00",
+      "cptcode3": "N/A",
+      "oneTimeFeeName": "Fee B"
+    },
+    {
+      "id": 3634,
+      "timestamp": "2021-02-23T02:54:20",
+      "memberPaymentTypeId": "DirectPaymentToCenterByCheck",
+      "amount": "-100.00",
+      "allocationDiscountAmount": 0,
+      "memberPaymentMethodId": "CH",
+      "memberBankAccount": {
+        "cryptAccountNumber": "x1111"
+      }
+    },
+    {
+      "id": 2612,
+      "timestamp": "24 May, 2023 08:36:26",
+      "memberPaymentTypeId": "ExampleFee",
+      "amount": "744.54",
+      "outstandingBalance": null,
+      "billingCycleStartDate": "11 May, 2023 00:00:00",
+      "billingCycleEndDate": "23 June, 2023 00:00:00",
+      "cptcode1": "12345",
+      "cptcode2": "N/A",
+      "cptcode3": "A1234",
+      "recurringFeeName": "Fee C",
+      "billingNote": "Note 5"
+    },
+    {
+      "id": 4637,
+      "timestamp": "15 April, 2024 17:56:44",
+      "memberPaymentTypeId": "Credit",
+      "amount": -307.06,
+      "billingNote": "Note 5"
+    },
+    {
+      "id": 8558,
+      "timestamp": "2021-07-24T02:44:50",
+      "memberPaymentTypeId": "InsuranceDiscount",
+      "amount": -250.73,
+      "discountTypeName": "Discount B",
+      "allocationDiscountAmount": "0.00",
+      "cptcode3": "N/A"
+    },
+    {
+      "id": 8165,
+      "timestamp": "21 May, 2019 15:11:03",
+      "memberPaymentTypeId": "PAY",
+      "paymentSubType": "EXAMPLE_REFUND",
+      "amount": "-121.40",
+      "allocationDiscountAmount": 0.0,
+      "cptcode2": "N/A",
+      "billingNote": "Note 2"
+    },
+    {
+      "id": 2549,
+      "timestamp": "29 December, 2023 19:50:39",
+      "memberPaymentTypeId": "PAY",
+      "amount": "-326.6",
+      "billingCycleStartDate": "01 January, 0001 00:00:00"
+    },
+    {
+      "id": 2585,
+      "timestamp": "2019-09-13T00:54:41",
+      "amount": "329",
+      "billingCycleStartDate": "27 August, 2019 00:00:00",
+      "billingCycleEndDate": "2019-09-21T00:00:00",
+      "memberFreezeEvent": {
+        "freezeDate": "2021-06-07T00:00:00"
+      },
+      "discountTypeName": "Discount A",
+      "allocationDiscountAmount": "33.87",
+      "cptcode2": "12345",
+      "recurringFeeName": "Fee D",
+      "ivfCenterProvider": {
+        "fullName": "Example Provider"
+      }
+    },
+    {
+      "id": 5900,
+      "timestamp": "09 February, 2022 04:20:58",
+      "memberPaymentTypeId": "chg",
+      "amount": 320.60,
+      "outstandingBalance": "137.57",
+      "billingCycleStartDate": "0001-01-01T00:00:00",
+      "billingCycleEndDate": "0001-01-01T00:00:00",
+      "memberFreezeEvent": {
+        "freezeDate": "28 December, 2020 00:00:00"
+      },
+      "cptcode1": "A1234",
+      "cptcode2": "N/A",
+      "cptcode3": "12345"
+    },
+    {
+      "id": 6774,
+      "timestamp": "22 March, 2020 04:46:41",
+      "memberPaymentTypeId": "ExampleFee",
+      "amount": 117,
+      "outstandingBalance": "0",
+      "billingCycleStartDate": "2020-04-20T00:00:00",
+      "billingCycleEndDate": "28 July, 2020 00:00:00",
+      "discountTypeName": "Discount A",
+      "allocationDiscountAmount": 27,
+      "cptcode2": "A1234",
+      "recurringFeeName": "Fee G",
+      "billingNote": "Note 5"
+    },
+    {
+      "id": 6873,
+      "timestamp": "2021-08-27T14:59:47",
+      "memberPaymentTypeId": "RefundViaCheck",
+      "amount": "514.60",
+      "billingNote": "Note 6",
+      "memberPaymentMethodId": "CH",
+      "memberBankAccount": {
+        "cryptAccountNumber": "x1111"
+      }
+    },
+    {
+      "id": 7503,
+      "timestamp": "01 August, 2024 01:44:22",
+      "memberPaymentTypeId": "ExampleFee",
+      "amount": "367.39",
+      "outstandingBalance": 0,
+      "memberFreezeEventDate": "2023-04-09T00:00:00",
+      "discountTypeName": "Discount A",
+      "allocationDiscountAmount": "25.3",
+      "cptcode3": "N/A",
+      "recurringFeeName": "Fee E"
+    },
+    {
+      "id": 5407,
+      "timestamp": "11 April, 2021 18:55:57",
+      "memberPaymentTypeId": "PAY",
+      "amount": "394",
+      "billingCycleStartDate": "0001-01-01T00:00:00",
+      "billingCycleEndDate": "01 January, 0001 00:00:00",
+      "cptcode3": "N/A",
+      "transactionStatus": "settled"
+    },
+    {
+      "id": 6362,
+      "timestamp": "13 November, 2023 20:15:43",
+      "memberPaymentTypeId": "PAY",
+      "amount": "-168.77",
+      "billingCycleStartDate": "01 January, 0001 00:00:00",
+      "billingCycleEndDate": "0001-01-01T00:00:00",
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": {
+        "type": "PayPal"
+      },
+      "creditCardSystemStatus": "INV",
+      "transactionAuthReference": "dummy-auth-ref"
+    },
+    {
+      "id": 4982,
+      "timestamp": "14 June, 2022 15:36:16",
+      "memberPaymentTypeId": "ExampleFee",
+      "amount": 576.0,
+      "outstandingBalance": null,
+      "billingCycleStartDate": "01 January, 0001 00:00:00",
+      "billingCycleEndDate": "01 January, 0001 00:00:00",
+      "memberFreezeEvent": {
+        "freezeDate": "2024-08-26T00:00:00"
+      },
+      "discountTypeName": "Discount A",
+      "allocationDiscountAmount": 14.51,
+      "cptcode1": "A1234",
+      "oneTimeFeeName": "Fee F",
+      "billingNote": "Note 9",
+      "ivfCenterLab": {
+        "name": "Example Lab",
+        "taxId": "00-0000000"
+      }
+    },
+    {
+      "id": 8638,
+      "timestamp": "2020-11-08T01:11:19",
+      "memberPaymentTypeId": "CHG",
+      "amount": 392.53,
+      "outstandingBalance": 322.78,
+      "billingCycleStartDate": "2020-12-01T00:00:00",
+      "recurringFeeName": "Fee A",
+      "billingNote": "Note 4"
+    }
+  ],
+  "total": 23
+}

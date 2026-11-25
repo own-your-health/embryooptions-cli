@@ -1,7 +1,7 @@
 [package]
 name = "embryooptions-cli"
 description = "Unofficial read-only CLI for a member's storage bills on Embryo Options, the embryo and egg storage billing portal IVF clinics use: the account, billing history and payments (health-records/v1)."
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-only"

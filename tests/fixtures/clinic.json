@@ -1,6 +1,6 @@
 {
   "id": 7,
-  "name": "Example Fertility Clinic",
+  "name": "Example Clinic",
   "currencySymbol": "$",
   "currencyCultureInfo": "en-US",
   "merchantAccountDetails": { "id": 1, "merchantAccountId": "dummy-merchant", "currencyCode": "USD" }

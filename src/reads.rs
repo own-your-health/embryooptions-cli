@@ -740,7 +740,7 @@ mod tests {
         // A string of a decimal.
         for (text, cents) in [
             ("\"40.00\"", 4000),
-            ("\"-600.00\"", -60000),
+            ("\"-721.98\"", -72198),
             ("\"7\"", 700),
             ("\"0.5\"", 50),
         ] {
@@ -775,10 +775,10 @@ mod tests {
 
     #[test]
     fn days_are_read_from_dotnet_date_times() {
-        let v = json!({"a": "2026-01-05T10:00:00", "b": "2026-01-05", "c": "0001-01-01T00:00:00",
-            "d": "01/05/2026", "e": 7});
-        assert_eq!(day(&v, "a").as_deref(), Some("2026-01-05"));
-        assert_eq!(day(&v, "b").as_deref(), Some("2026-01-05"));
+        let v = json!({"a": "2019-09-21T23:45:53", "b": "2019-09-21", "c": "0001-01-01T00:00:00",
+            "d": "09/21/2019", "e": 7});
+        assert_eq!(day(&v, "a").as_deref(), Some("2019-09-21"));
+        assert_eq!(day(&v, "b").as_deref(), Some("2019-09-21"));
         for none in ["c", "d", "e", "missing"] {
             assert_eq!(day(&v, none), None, "{none}");
         }
@@ -786,13 +786,13 @@ mod tests {
         for (text, want) in [
             ("05 March, 2024 08:15:42", Some("2024-03-05")),
             ("5 March, 2024", Some("2024-03-05")),
-            ("29 February, 2028 00:00:00", Some("2028-02-29")),
+            ("29 February, 2024 00:00:00", Some("2024-02-29")),
             ("01 January, 0001 00:00:00", None),
-            ("31 June, 2026 00:00:00", None),
-            ("29 February, 2026 00:00:00", None),
+            ("31 June, 2023 00:00:00", None),
+            ("29 February, 2023 00:00:00", None),
             ("5 Mar, 2024 00:00:00", None),
             ("March 5, 2024", None),
-            ("99 November, 2026", None),
+            ("99 November, 2022", None),
         ] {
             assert_eq!(day(&json!({ "a": text }), "a").as_deref(), want, "{text}");
         }
@@ -814,10 +814,10 @@ mod tests {
             (Some("FlatDiscount"), true, Kind::Discount),
             (Some("Credit"), false, Kind::Credit),
             (Some("BalanceForward"), false, Kind::Other),
-            (Some("AnnualStorageFee"), true, Kind::Charge),
+            (Some("ExampleFee"), true, Kind::Charge),
             (None, true, Kind::Charge),
             // A type the app's list does not name, with no fee: not a bill.
-            (Some("AnnualStorageFee"), false, Kind::Unknown),
+            (Some("ExampleFee"), false, Kind::Unknown),
             (Some("WriteOff"), false, Kind::Unknown),
             (Some(" "), false, Kind::Unknown),
             (None, false, Kind::Unknown),
@@ -898,11 +898,11 @@ mod tests {
         };
         let pay = |amount: &str, sub: &str| json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": amount, "paymentSubType": sub});
         let chg = |amount: &str| json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": amount});
-        assert_eq!(kind(pay("-600.00", "EXAMPLE_SUBTYPE")), (Kind::Payment, Some(60000)));
-        assert_eq!(kind(pay("600.00", "EXAMPLE_SUBTYPE")), (Kind::Refund, Some(60000)));
-        assert_eq!(kind(pay("-600.00", "CC_REFUND")), (Kind::Refund, Some(60000)));
-        assert_eq!(kind(chg("600.00")), (Kind::Charge, Some(60000)));
-        assert_eq!(kind(chg("-600.00")), (Kind::Credit, Some(60000)));
+        assert_eq!(kind(pay("-896.97", "EXAMPLE_SUBTYPE")), (Kind::Payment, Some(89697)));
+        assert_eq!(kind(pay("896.97", "EXAMPLE_SUBTYPE")), (Kind::Refund, Some(89697)));
+        assert_eq!(kind(pay("-134.51", "EXAMPLE_REFUND")), (Kind::Refund, Some(13451)));
+        assert_eq!(kind(chg("676.59")), (Kind::Charge, Some(67659)));
+        assert_eq!(kind(chg("-676.59")), (Kind::Credit, Some(67659)));
         assert_eq!(
             kind(json!({"id": 1, "memberPaymentTypeId": "PAY"})),
             (Kind::Payment, None)
@@ -920,17 +920,17 @@ mod tests {
             }
             .settlement("2020-06-15")
         };
-        let pay_back = || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "600.00"});
+        let pay_back = || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "377.39"});
         let refund =
-            || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-600.00", "paymentSubType": "CC_REFUND"});
-        let taken_off = || json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": "-600.00"});
+            || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-894.14", "paymentSubType": "EXAMPLE_REFUND"});
+        let taken_off = || json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": "-521.85"});
         for v in [&pay_back as &dyn Fn() -> Value, &refund, &taken_off] {
             assert_eq!(state(v(), None, None), Settlement::Unconfirmed);
             assert_eq!(state(v(), Some("ACC"), None), Settlement::Unconfirmed);
             assert_eq!(state(v(), Some("ACC"), Some("settled")), Settlement::Settled);
             assert_eq!(state(v(), Some("DEC"), None), Settlement::Failed);
         }
-        let as_coded = json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-600.00"});
+        let as_coded = json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-505.19"});
         assert_eq!(state(as_coded.clone(), Some("ACC"), None), Settlement::Settled);
         assert_eq!(state(as_coded, None, None), Settlement::Unconfirmed);
     }
@@ -938,10 +938,10 @@ mod tests {
     #[test]
     fn a_code_that_names_nothing_is_no_code() {
         let r = row(&json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": "1.00",
-            "cptcode1": "12345", "cptcode2": "54321", "cptcode3": "N/A"}))
+            "cptcode1": "12345", "cptcode2": "A1234", "cptcode3": "N/A"}))
         .unwrap()
         .unwrap();
-        assert_eq!(r.codes, ["12345", "54321"]);
+        assert_eq!(r.codes, ["12345", "A1234"]);
     }
 
     #[test]
@@ -972,23 +972,27 @@ mod tests {
 
     #[test]
     fn codes_get_their_system_by_shape() {
-        assert_eq!(code_of("89342").system.as_deref(), Some(CPT));
-        assert_eq!(code_of("0042t").system.as_deref(), Some(CPT));
-        assert_eq!(code_of("S4027").system.as_deref(), Some(HCPCS));
-        assert_eq!(code_of("STORAGE").system, None);
-        assert_eq!(code_of(" s4027 ").code, "S4027");
+        assert_eq!(code_of("12345").system.as_deref(), Some(CPT));
+        assert_eq!(code_of("1234t").system.as_deref(), Some(CPT));
+        assert_eq!(code_of("A1234").system.as_deref(), Some(HCPCS));
+        assert_eq!(code_of("EXAMPLE").system, None);
+        assert_eq!(code_of(" a1234 ").code, "A1234");
     }
 
     #[test]
     fn a_history_page_is_data_and_total_or_a_bare_list() {
         let p = history_page(
-            &json!({"data": [{"id": 1, "memberPaymentTypeId": "Fee", "oneTimeFeeName": "Fee", "amount": 10},
-            {"memberPaymentTypeId": "AutomatedPayment"}], "total": 3}),
+            &json!({"data": [{"id": 1, "memberPaymentTypeId": "ExampleFee", "oneTimeFeeName": "Fee A", "amount": 90.73},
+            {"memberPaymentTypeId": "MemberInitiatedPayment", "transactionStatus": "settled"},
+            {"id": 2, "memberPaymentTypeId": "CHG", "amount": "430.21", "outstandingBalance": "430.21"},
+            {"memberPaymentTypeId": "PAY", "creditCardSystemStatus": "DEC"},
+            {"memberPaymentTypeId": "CollectedPayment", "transactionStatus": "pending"},
+            {"id": 3, "recurringFeeName": "Fee B", "amount": 315.22, "outstandingBalance": 0}], "total": 7}),
         )
         .unwrap();
         assert_eq!(
             (p.rows.len(), p.unidentified.clone(), p.len, p.total, p.unpaged),
-            (1, vec![Kind::Payment], 2, Some(3), false)
+            (3, vec![Kind::Payment; 3], 6, Some(7), false)
         );
         let p = history_page(&json!([{"id": 1}])).unwrap();
         assert!(p.unpaged);
@@ -1000,29 +1004,26 @@ mod tests {
     #[test]
     fn a_charge_is_a_bill_with_its_period_or_its_code() {
         let r = row(
-            &json!({"id": 9, "memberPaymentTypeId": "Fee", "timestamp": "2026-01-02T08:00:00",
-            "amount": 600.00, "outstandingBalance": 600.00, "billingCycleStartDate": "2026-01-01T00:00:00",
-            "billingCycleEndDate": "2026-12-31T00:00:00", "recurringFeeName": "Annual storage",
-            "memberFreezeEvent": {"freezeDate": "2020-05-01T00:00:00"}}),
+            &json!({"id": 9, "memberPaymentTypeId": "ExampleFee", "timestamp": "2023-08-16T14:19:53",
+            "amount": 835.31, "outstandingBalance": 315.22, "billingCycleStartDate": "2023-08-03T00:00:00",
+            "billingCycleEndDate": "2023-10-29T00:00:00", "recurringFeeName": "Fee A",
+            "memberFreezeEvent": {"freezeDate": "2020-10-18T00:00:00"}}),
         )
         .unwrap()
         .unwrap();
         let b = bill("1001", &r).unwrap();
         assert_eq!(
             (b.service_start.as_str(), b.service_end.as_deref(), b.posted.as_deref()),
-            ("2026-01-01", Some("2026-12-31"), Some("2026-01-02"))
+            ("2023-08-03", Some("2023-10-29"), Some("2023-08-16"))
         );
         assert!(b.lines.is_empty());
-        assert_eq!(
-            b.description.as_deref(),
-            Some("Annual storage (freeze date 2020-05-01)")
-        );
+        assert_eq!(b.description.as_deref(), Some("Fee A (freeze date 2020-10-18)"));
         assert_eq!(
             (b.totals.billed, b.totals.patient_owes),
-            (Some(Cents(60000)), Some(Cents(60000)))
+            (Some(Cents(83531)), Some(Cents(31522)))
         );
         let coded = Row {
-            codes: vec!["89342".into()],
+            codes: vec!["12345".into()],
             ..r.clone()
         };
         let b = bill("1001", &coded).unwrap();
