@@ -1,42 +1,145 @@
 {
-  "total": 8,
   "data": [
     {
-      "id": 504,
-      "memberPaymentTypeId": "MemberInitiatedPayment",
-      "timestamp": "2025-06-01T12:00:00",
-      "amount": 50.00,
-      "memberPaymentMethodId": "CR",
-      "memberPaymentMethod": { "type": "PayPal" },
-      "creditCardSystemStatus": "DEC",
-      "transactionStatus": "processor_declined"
-    },
-    {
-      "id": 505,
-      "memberPaymentTypeId": "FlatDiscount",
-      "timestamp": "2025-01-02T08:00:00",
-      "amount": -25.00,
-      "discountTypeName": "Loyalty"
-    },
-    {
-      "id": 506,
-      "memberPaymentTypeId": "NoticeFee",
-      "timestamp": "2024-12-01T10:00:00",
-      "amount": 25.00,
+      "id": 8077,
+      "timestamp": "2023-05-01T07:21:46",
+      "memberPaymentTypeId": "ExampleOtherFee",
+      "amount": 765.08,
       "outstandingBalance": 0.00,
-      "oneTimeFeeName": "Notice fee",
-      "billingCycleStartDate": "0001-01-01T00:00:00"
+      "billingCycleStartDate": "0001-01-01T00:00:00",
+      "billingCycleEndDate": "0001-01-01T00:00:00",
+      "recurringFeeName": null,
+      "oneTimeFeeName": "Fee A",
+      "billingNote": null,
+      "memberFreezeEvent": {
+        "freezeDate": "0001-01-01T00:00:00"
+      },
+      "ivfCenterProvider": null,
+      "ivfCenterLab": null,
+      "cptcode1": null,
+      "cptcode2": null,
+      "cptcode3": null,
+      "memberPaymentMethodId": null,
+      "creditCardSystemStatus": null,
+      "transactionStatus": null
     },
     {
-      "memberPaymentTypeId": "AutomatedPayment",
-      "timestamp": "2024-12-05T10:00:00",
-      "amount": 25.00
+      "id": null,
+      "timestamp": "2021-05-29T05:38:15",
+      "memberPaymentTypeId": "MemberInitiatedPayment",
+      "amount": -362.33,
+      "billingNote": null,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": {
+        "type": "Credit Card",
+        "creditCardDetails": {
+          "cardType": "Visa",
+          "maskedNumber": "************1111"
+        }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionStatus": "settled",
+      "transactionAuthReference": "dummy-auth-ref"
     },
     {
-      "id": 508,
+      "id": 6379,
+      "timestamp": "2024-08-11T05:18:01",
+      "memberPaymentTypeId": "CenterInitiatedDiscount",
+      "amount": -34.68,
+      "discountTypeName": "Discount B",
+      "billingNote": "Note 6"
+    },
+    {
+      "id": 5995,
+      "timestamp": "2022-04-13T11:58:07",
+      "memberPaymentTypeId": "MemberInitiatedPayment",
+      "amount": -201.72,
+      "billingNote": null,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": {
+        "type": "Credit Card",
+        "creditCardDetails": {
+          "cardType": "MasterCard",
+          "maskedNumber": "************1111"
+        }
+      },
+      "creditCardSystemStatus": "ACC",
+      "transactionStatus": "settled",
+      "transactionAuthReference": "dummy-auth-ref"
+    },
+    {
+      "id": 8670,
+      "timestamp": "2021-09-06T02:56:35",
+      "memberPaymentTypeId": "ScheduledInstallmentPayment",
+      "amount": -427.60,
+      "billingNote": null,
+      "memberPaymentMethodId": null,
+      "creditCardSystemStatus": null,
+      "transactionStatus": null
+    },
+    {
+      "id": null,
+      "timestamp": "2021-10-05T18:04:48",
+      "memberPaymentTypeId": "DirectPaymentToCenterByCheck",
+      "amount": -597.41,
+      "billingNote": "Note 8",
+      "memberPaymentMethodId": "CH",
+      "memberBankAccount": {
+        "cryptAccountNumber": "x1111"
+      },
+      "creditCardSystemStatus": null,
+      "transactionStatus": null
+    },
+    {
+      "id": 2435,
+      "timestamp": "2019-01-09T20:40:13",
+      "memberPaymentTypeId": "MemberInitiatedPayment",
+      "amount": -129.64,
+      "billingNote": null,
+      "memberPaymentMethodId": "CR",
+      "memberPaymentMethod": {
+        "type": "PayPal"
+      },
+      "creditCardSystemStatus": "DEC",
+      "transactionStatus": "processor_declined",
+      "transactionAuthReference": "dummy-auth-ref"
+    },
+    {
+      "id": 5561,
+      "timestamp": "2021-02-24T21:00:59",
+      "memberPaymentTypeId": "ExampleOtherFee",
+      "amount": 595.03,
+      "outstandingBalance": 53.83,
+      "billingCycleStartDate": null,
+      "billingCycleEndDate": null,
+      "recurringFeeName": null,
+      "oneTimeFeeName": "Fee C",
+      "billingNote": "Note 3",
+      "memberFreezeEvent": {
+        "freezeDate": "2021-02-08T00:00:00"
+      },
+      "ivfCenterProvider": {
+        "fullName": "Example Provider"
+      },
+      "memberPaymentMethodId": null,
+      "creditCardSystemStatus": null,
+      "transactionStatus": null
+    },
+    {
+      "id": 4853,
+      "timestamp": "2022-06-11T17:14:44",
       "memberPaymentTypeId": "MemberDisputedChargeResolutionProcessInitiated",
-      "timestamp": "2024-12-02T10:00:00",
-      "amount": 0
+      "amount": 0.00,
+      "billingNote": "Note 6"
+    },
+    {
+      "id": 6792,
+      "timestamp": "2022-02-07T20:42:50",
+      "memberPaymentTypeId": "CenterInitiatedDiscount",
+      "amount": -61.27,
+      "discountTypeName": "Discount A",
+      "billingNote": "Note 7"
     }
-  ]
+  ],
+  "total": 15
 }

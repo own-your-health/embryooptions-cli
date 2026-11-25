@@ -107,10 +107,18 @@ fn serve_with(routes: Routes, hook: Option<Hook>) -> Server {
     Server { base, seen }
 }
 
-/// The member's account and billing history, synthetic: only the shape of
-/// an answer, not the API's fields (which are not yet observed).
-const ACCOUNT: &str = r#"{"memberAccount":{"unpaidBalance":12.5}}"#;
-const HISTORY: &str = r#"[{"date":"2026-01-02","amount":250.0}]"#;
+/// The member's account and billing history, synthetic, for the tests that
+/// return an answer whole without reading its fields.
+const ACCOUNT: &str = r#"{"memberAccount":{"unpaidBalance":648.42}}"#;
+const HISTORY: &str = r#"{"total": 8, "data": [
+{"id": 2693, "timestamp": "2022-07-19T05:19:11", "memberPaymentTypeId": "ExampleFee", "oneTimeFeeName": "Fee B", "amount": 468.77, "outstandingBalance": 0.00},
+{"id": 8521, "timestamp": "2023-05-26T00:26:58", "memberPaymentTypeId": "MemberInitiatedPayment", "amount": -447.85, "memberPaymentMethodId": "CR", "creditCardSystemStatus": "DEC"},
+{"id": 3970, "timestamp": "2023-12-26T22:53:24", "memberPaymentTypeId": "ExampleFee", "oneTimeFeeName": "Fee A", "amount": 297.59, "outstandingBalance": 297.59},
+{"id": 4675, "timestamp": "2019-08-19T20:50:36", "memberPaymentTypeId": "CHG", "billingNote": "Note 1", "amount": 616.72, "outstandingBalance": 350.83},
+{"id": 2410, "timestamp": "2021-04-20T23:38:04", "memberPaymentTypeId": "CenterInitiatedPayment", "amount": -132.44, "transactionStatus": "processing"},
+{"id": 3714, "timestamp": "2024-10-07T06:29:31", "memberPaymentTypeId": "MemberInitiatedPayment", "amount": -206.23, "memberPaymentMethodId": "CR", "creditCardSystemStatus": "ACC"},
+{"id": 7979, "timestamp": "2019-12-27T12:50:40", "memberPaymentTypeId": "CHG", "billingNote": "Note 2", "amount": 341.63, "outstandingBalance": 0.00},
+{"id": 8176, "timestamp": "2022-02-25T05:16:47", "memberPaymentTypeId": "DirectPaymentToCenterByCheck", "amount": -49.86, "memberPaymentMethodId": "CH"}]}"#;
 
 fn routes() -> Routes {
     let mut r = Routes::new();
@@ -774,9 +782,6 @@ const MEMBER_FIXTURE: &str = include_str!("fixtures/member.json");
 const CLINIC_FIXTURE: &str = include_str!("fixtures/clinic.json");
 const HISTORY_1: &str = include_str!("fixtures/history-page-1.json");
 const HISTORY_2: &str = include_str!("fixtures/history-page-2.json");
-/// Invented rows in the string format: string amounts, written-out dates,
-/// codes for types, no `outstandingBalance` and no `transactionStatus`.
-const HISTORY_STRINGS: &str = include_str!("fixtures/history-string-shape.json");
 const UPCOMING_FIXTURE: &str = include_str!("fixtures/upcoming.json");
 
 const MEMBER_AT: &str = "/api/Members/4242/MemberAccount/Member?ivfCenterId=7";
@@ -849,15 +854,15 @@ fn accounts_list_reads_the_account_the_clinic_and_every_page_of_history() {
     assert_eq!(v["schema"], "account-list/v1");
     let a = &v["items"][0];
     assert_eq!(a["id"], "1001");
-    assert_eq!(a["provider"], "Example Fertility Clinic");
+    assert_eq!(a["provider"], "Example Clinic");
     assert_eq!(a["currency"], "USD");
-    assert_eq!(a["owes"].to_string(), "600.00");
-    assert_eq!(a["admin_fees"].to_string(), "0.00");
+    assert_eq!(a["owes"].to_string(), "509.29");
+    assert_eq!(a["admin_fees"].to_string(), "14.41");
     assert_eq!(
         (a["bills"].as_u64(), a["open_bills"].as_u64(), a["payments"].as_u64()),
-        (Some(3), Some(1), Some(2))
+        (Some(4), Some(2), Some(6))
     );
-    assert_eq!(a["owed_on_bills"].to_string(), "600.00");
+    assert_eq!(a["owed_on_bills"].to_string(), "509.29");
     assert!(a["next_bill"].is_null(), "member type 1 is not embryos in storage");
     // The app's own reads, in order, and nothing else: no upcoming bill
     // for this member type.
@@ -878,9 +883,9 @@ fn a_member_with_embryos_in_storage_sees_the_next_bill() {
     let site = Site::open(&env, &adult1()).unwrap();
     let v = readers::accounts_list(&site).unwrap();
     let next = &v["items"][0]["next_bill"];
-    assert_eq!(next["date"], "2027-01-01");
-    assert_eq!(next["amount"].to_string(), "600.00");
-    assert_eq!(next["freeze_date"], "2020-05-01");
+    assert_eq!(next["date"], "2999-04-14");
+    assert_eq!(next["amount"].to_string(), "443.89");
+    assert_eq!(next["freeze_date"], "2022-12-28");
     assert_eq!(targets(&server).last().map(String::as_str), Some(UPCOMING_AT));
 
     // A failure of that read is a warning, as the app ignores it; a
@@ -926,24 +931,31 @@ fn bills_list_is_the_charges_newest_service_first() {
     let site = Site::open(&env, &adult1()).unwrap();
     let all = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
     assert_eq!(all["schema"], "bill-list/v1");
-    assert_eq!(ids(&all), ["501", "503", "506"]);
+    assert_eq!(ids(&all), ["2271", "8077", "5561", "2366"]);
     let b = &all["items"][0];
     assert_eq!(
         (b["date"].as_str(), b["end"].as_str(), b["posted"].as_str()),
-        (Some("2026-01-01"), Some("2026-12-31"), Some("2026-01-02"))
+        (Some("2023-11-25"), Some("2024-04-02"), Some("2023-11-10"))
     );
-    assert_eq!(b["description"], "Annual embryo storage");
-    assert_eq!(b["freeze_date"], "2020-05-01");
-    assert_eq!(
+    assert_eq!(b["description"], "Fee B");
+    assert_eq!(b["freeze_date"], "2023-02-20");
+    let owed = |i: usize| {
+        let b = &all["items"][i];
         (
-            b["billed"].to_string().as_str(),
-            b["owes"].to_string().as_str(),
-            b["open"].as_bool()
-        ),
-        ("600.00", "600.00", Some(true))
-    );
-    // .NET's empty date is no period: the notice fee is dated by its posting.
-    assert_eq!(all["items"][2]["date"], "2024-12-01");
+            b["billed"].to_string(),
+            b["owes"].to_string(),
+            b["open"].as_bool().unwrap(),
+        )
+    };
+    assert_eq!(owed(0), ("455.46".into(), "455.46".into(), true));
+    assert_eq!(owed(1), ("765.08".into(), "0.00".into(), false));
+    assert_eq!(owed(2), ("595.03".into(), "53.83".into(), true), "owed in part");
+    assert_eq!(owed(3), ("105.11".into(), "0.00".into(), false));
+    // .NET's empty date is no period and no freeze: the charge is dated by
+    // its posting.
+    let undated = &all["items"][1];
+    assert_eq!(undated["date"], "2023-05-01");
+    assert!(undated["end"].is_null() && undated["freeze_date"].is_null());
 
     let range = |since: Option<&str>, until: Option<&str>, limit: Option<u32>| RangeArgs {
         since: since.map(str::to_string),
@@ -952,19 +964,19 @@ fn bills_list_is_the_charges_newest_service_first() {
     };
     assert_eq!(
         ids(&readers::bills_list(&site, true, &RangeArgs::default()).unwrap()),
-        ["501"]
+        ["2271", "5561"]
     );
     assert_eq!(
-        ids(&readers::bills_list(&site, false, &range(Some("2025-6-1"), None, None)).unwrap()),
-        ["501"]
+        ids(&readers::bills_list(&site, false, &range(Some("2022-3-7"), None, None)).unwrap()),
+        ["2271", "8077"]
     );
     assert_eq!(
-        ids(&readers::bills_list(&site, false, &range(None, Some("2025-06-01"), None)).unwrap()),
-        ["503", "506"]
+        ids(&readers::bills_list(&site, false, &range(None, Some("2022-03-07"), None)).unwrap()),
+        ["5561", "2366"]
     );
     assert_eq!(
         ids(&readers::bills_list(&site, false, &range(None, None, Some(1))).unwrap()),
-        ["501"]
+        ["2271"]
     );
 }
 
@@ -973,15 +985,18 @@ fn bills_show_has_what_the_history_says_and_only_charges_are_bills() {
     let server = serve(reader_routes());
     let env = reader_env(&server, "show");
     let site = Site::open(&env, &adult1()).unwrap();
-    let v = readers::bill_show(&site, " 501 ").unwrap();
+    let v = readers::bill_show(&site, " 2271 ").unwrap();
     assert_eq!(v["schema"], "bill/v1");
-    assert_eq!(v["provider"], "Dr. Example Provider");
+    assert_eq!(v["provider"], "Example Provider");
     assert_eq!(v["lab"], "Example Lab");
-    assert_eq!(v["codes"], json!(["89342"]));
-    assert_eq!(v["note"], "Storage, year 7");
-    assert_eq!(v["charges"][0]["code"], "89342");
-    assert_eq!(v["charges"][0]["amount"].to_string(), "600.00");
-    for id in ["502", "9999", "505"] {
+    assert_eq!(v["lab_tax_id"], "00-0000000");
+    assert_eq!(v["codes"], json!(["12345", "A1234"]));
+    assert_eq!(v["note"], "Note 2");
+    assert_eq!(v["discount_type"], "Discount A");
+    assert_eq!(v["allocated_discount"].to_string(), "3.24");
+    assert_eq!(v["charges"][0]["code"], "12345");
+    assert_eq!(v["charges"][0]["amount"].to_string(), "455.46");
+    for id in ["8545", "9999", "6379"] {
         let e = readers::bill_show(&site, id).err().unwrap();
         assert_eq!(e.exit_code(), 4, "{id}");
     }
@@ -994,27 +1009,51 @@ fn payments_list_tells_payments_discounts_and_failures_apart() {
     let site = Site::open(&env, &adult1()).unwrap();
     let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
     assert_eq!(v["schema"], "payment-list/v2");
-    assert_eq!(ids(&v), ["504", "502", "505"]);
+    assert_eq!(
+        ids(&v),
+        ["6379", "5995", "6792", "8670", "8148", "8545", "7024", "2435"]
+    );
     let p = |i: usize| &v["items"][i];
     assert_eq!(
         (
-            p(0)["kind"].as_str(),
-            p(0)["method"].as_str(),
-            p(0)["settled"].as_bool()
+            p(7)["kind"].as_str(),
+            p(7)["method"].as_str(),
+            p(7)["settled"].as_bool()
         ),
         (Some("payment"), Some("PayPal"), Some(false))
     );
     assert_eq!(
         (
-            p(1)["amount"].to_string().as_str(),
-            p(1)["method"].as_str(),
-            p(1)["settled"].as_bool()
+            p(5)["amount"].to_string().as_str(),
+            p(5)["method"].as_str(),
+            p(5)["settled"].as_bool()
         ),
-        ("600.00", Some("Visa"), Some(true))
+        ("315.31", Some("Visa"), Some(true))
     );
+    for (i, amount) in [(0, "34.68"), (2, "61.27")] {
+        assert_eq!(
+            (p(i)["kind"].as_str(), p(i)["amount"].to_string().as_str()),
+            (Some("discount"), amount)
+        );
+    }
+    let states: Vec<&str> = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["state"].as_str().unwrap())
+        .collect();
     assert_eq!(
-        (p(2)["kind"].as_str(), p(2)["amount"].to_string().as_str()),
-        (Some("discount"), "25.00")
+        states,
+        [
+            "settled",
+            "settled",
+            "settled",
+            "unconfirmed",
+            "pending",
+            "settled",
+            "failed",
+            "failed"
+        ]
     );
     let text = v.to_string();
     for absent in ["1111", "dummy-auth-ref"] {
@@ -1044,17 +1083,27 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
     let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
     assert!(finished.trailer.complete);
     let text = String::from_utf8(out.clone()).unwrap();
-    for absent in ["4242", "1111", "dummy-auth-ref", "member-one-dummy"] {
+    // The settled payments it writes carry a `transactionAuthReference`.
+    assert!(HISTORY_1.contains(r#""transactionAuthReference": "dummy-auth-ref""#));
+    for absent in [
+        "4242",
+        "1111",
+        "dummy-auth-ref",
+        "transactionAuthReference",
+        "member-one-dummy",
+    ] {
         assert!(!text.contains(absent), "{absent}");
     }
     // Amounts keep the site's spelling.
-    assert!(text.contains(r#""value":600.00"#), "{text}");
+    for amount in [r#""value":455.46"#, r#""value":0.00"#] {
+        assert!(text.contains(amount), "{text}");
+    }
     let lines = stream_of(&out);
     let header = &lines[0];
     assert_eq!(header["schema"], "records-stream/v1");
     assert_eq!(header["method"], "portal");
     assert_eq!(header["organization"]["id"], "org-exampleclinic");
-    assert_eq!(header["organization"]["name"], "Example Fertility Clinic");
+    assert_eq!(header["organization"]["name"], "Example Clinic");
     let patient = header["patient"]["id"].as_str().unwrap();
     assert!(patient.starts_with("patient-exampleclinic-"), "{patient}");
     let types: Vec<&str> = lines[1..lines.len() - 1]
@@ -1070,6 +1119,8 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
             "Invoice",
             "Invoice",
             "Invoice",
+            "Invoice",
+            "PaymentReconciliation",
             "PaymentReconciliation"
         ]
     );
@@ -1084,18 +1135,18 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
             .find(|i| i["id"] == id)
             .unwrap_or_else(|| panic!("{id}"))
     };
-    let open = by_id("bill-1001-501");
+    let open = by_id("bill-1001-2271");
     assert_eq!(open["status"], "issued");
-    assert_eq!(open["totalNet"]["value"].to_string(), "600.00");
+    assert_eq!(open["totalNet"]["value"].to_string(), "455.46");
     assert_eq!(open["totalGross"], open["totalNet"]);
     assert_eq!(open["account"]["reference"], "Account/account-1001");
-    assert_eq!(open["date"], "2026-01-02");
-    assert_eq!(open["type"]["text"], "Annual embryo storage (freeze date 2020-05-01)");
-    assert_eq!(open["participant"][0]["actor"]["display"], "Dr. Example Provider");
+    assert_eq!(open["date"], "2023-11-10");
+    assert_eq!(open["type"]["text"], "Fee B (freeze date 2023-02-20)");
+    assert_eq!(open["participant"][0]["actor"]["display"], "Example Provider");
     let charge = &open["contained"][0];
-    assert_eq!(charge["occurrenceDateTime"], "2026-01-01");
+    assert_eq!(charge["occurrenceDateTime"], "2023-11-25");
     assert_eq!(charge["code"]["coding"][0]["system"], "http://www.ama-assn.org/go/cpt");
-    assert_eq!(charge["code"]["coding"][0]["code"], "89342");
+    assert_eq!(charge["code"]["coding"][0]["code"], "12345");
     let billed = open["totalPriceComponent"]
         .as_array()
         .unwrap()
@@ -1104,20 +1155,28 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
         .unwrap();
     assert_eq!(
         (billed["type"].as_str(), billed["amount"]["value"].to_string().as_str()),
-        (Some("base"), "600.00")
+        (Some("base"), "455.46")
     );
-    assert_eq!(by_id("bill-1001-503")["status"], "balanced");
+    let in_part = by_id("bill-1001-5561");
+    assert_eq!(in_part["status"], "issued");
+    assert_eq!(in_part["totalNet"]["value"].to_string(), "53.83");
+    assert_eq!(by_id("bill-1001-2366")["status"], "balanced");
     // A charge naming no code is one line of its own.
-    let notice = by_id("bill-1001-506");
-    assert_eq!(notice["status"], "balanced");
-    assert_eq!(notice["contained"][0]["occurrenceDateTime"], "2024-12-01");
-    assert_eq!(notice["contained"][0]["code"]["text"], "Notice fee");
+    let uncoded = by_id("bill-1001-8077");
+    assert_eq!(uncoded["status"], "balanced");
+    assert_eq!(uncoded["contained"][0]["occurrenceDateTime"], "2023-05-01");
+    assert_eq!(uncoded["contained"][0]["code"]["text"], "Fee A");
 
     let payments = of_type(&lines, "PaymentReconciliation");
-    assert_eq!(payments[0]["id"], "payment-502");
-    assert_eq!(payments[0]["paymentDate"], "2025-01-03");
-    assert_eq!(payments[0]["paymentAmount"]["value"].to_string(), "600.00");
-    assert_eq!(payments[0]["disposition"], "Paid by Visa");
+    for (i, id, date, amount, method) in [
+        (0, "payment-8545", "2020-03-11", "315.31", "Paid by Visa"),
+        (1, "payment-5995", "2022-04-13", "201.72", "Paid by MasterCard"),
+    ] {
+        assert_eq!(payments[i]["id"], id);
+        assert_eq!(payments[i]["paymentDate"], date);
+        assert_eq!(payments[i]["paymentAmount"]["value"].to_string(), amount);
+        assert_eq!(payments[i]["disposition"], method);
+    }
 
     let trailer = lines.last().unwrap();
     assert_eq!(trailer["schema"], "records-stream-end/v1");
@@ -1143,6 +1202,20 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
         ],
         "no skip is an Invoice's, so a store may tell a bill the site dropped"
     );
+    let reasons: Vec<&str> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["reason"].as_str().unwrap())
+        .collect();
+    for (reason, says) in reasons.iter().zip([
+        "2 payment(s) turned down (declined, failed, voided), 1 scheduled or pending and 1 not shown to have settled",
+        "2 payment(s) came without an id",
+        "2 discount(s)",
+        "1 row(s) of the billing history that move no money",
+    ]) {
+        assert!(reason.starts_with(says), "{reason}");
+    }
     assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
 }
 
@@ -1152,25 +1225,38 @@ fn records_export_writes_the_account_its_bills_and_settled_payments() {
 fn records_export_never_writes_a_payment_that_has_not_settled() {
     let mut page: serde_json::Value = serde_json::from_str(HISTORY_2).unwrap();
     let rows = page["data"].as_array_mut().unwrap();
-    let row = |id: u64, kind: &str, at: &str, status: serde_json::Value| {
+    let row = |id: u64, kind: &str, at: &str, amount: f64, status: serde_json::Value| {
         json!({
             "id": id,
             "memberPaymentTypeId": kind,
-            "timestamp": format!("{at}T09:00:00"),
-            "amount": -600.00,
+            "timestamp": at,
+            "amount": amount,
             "creditCardSystemStatus": null,
             "transactionStatus": status,
         })
     };
-    rows.push(row(901, "ScheduledInstallmentPayment", "2999-01-03", json!("settled")));
+    rows.push(row(
+        901,
+        "ScheduledInstallmentPayment",
+        "2999-09-02T21:26:10",
+        -455.90,
+        json!("settled"),
+    ));
     rows.push(row(
         902,
-        "AutomatedPayment",
-        "2025-05-01",
+        "MemberInitiatedPayment",
+        "2023-08-10T03:25:35",
+        -513.84,
         json!("submitted_for_settlement"),
     ));
-    rows.push(row(903, "AutomatedPayment", "2025-05-02", json!(null)));
-    let total = 8 + 3;
+    rows.push(row(
+        903,
+        "MemberInitiatedPayment",
+        "2019-01-27T20:34:00",
+        -98.41,
+        json!(null),
+    ));
+    let total = 15 + 3;
     page["total"] = json!(total);
     let mut page1: serde_json::Value = serde_json::from_str(HISTORY_1).unwrap();
     page1["total"] = json!(total);
@@ -1192,7 +1278,7 @@ fn records_export_never_writes_a_payment_that_has_not_settled() {
     assert_eq!(state("901"), ("scheduled".into(), false));
     assert_eq!(state("902"), ("pending".into(), false));
     assert_eq!(state("903"), ("unconfirmed".into(), false));
-    assert_eq!(state("502"), ("settled".into(), true));
+    assert_eq!(state("8545"), ("settled".into(), true));
 
     let mut out = Vec::new();
     readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
@@ -1201,131 +1287,26 @@ fn records_export_never_writes_a_payment_that_has_not_settled() {
         .iter()
         .map(|p| p["id"].clone())
         .collect();
-    assert_eq!(ids, [json!("payment-502")]);
+    assert_eq!(ids, [json!("payment-8545"), json!("payment-5995")]);
     let skipped = lines.last().unwrap()["skipped"].to_string();
     assert!(
-        skipped.contains("2 scheduled or pending and 1 not shown to have settled"),
+        skipped.contains("3 scheduled or pending and 2 not shown to have settled"),
         "{skipped}"
     );
 }
 
-/// The routes for the string format, with the account owing `balance`.
-fn string_routes(balance: &str) -> Routes {
-    let mut r = reader_routes();
-    r.insert(page_at(1), ok(HISTORY_STRINGS));
-    r.insert(
-        MEMBER_AT.into(),
-        ok(&edited(
-            MEMBER_FIXTURE,
-            "\"billingBalance\": 600.00",
-            &format!("\"billingBalance\": {balance}"),
-        )),
-    );
-    r
-}
-
-#[test]
-fn the_string_format_is_read_row_by_row() {
-    let server = serve(string_routes("0.00"));
-    let env = reader_env(&server, "string-rows");
-    let site = Site::open(&env, &adult1()).unwrap();
-
-    let b = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
-    assert_eq!(ids(&b), ["922", "921"]);
-    let bill = |i: usize| &b["items"][i];
-    assert_eq!(
-        (
-            bill(0)["date"].as_str(),
-            bill(0)["end"].as_str(),
-            bill(0)["posted"].as_str()
-        ),
-        (Some("2023-07-01"), Some("2023-09-30"), Some("2023-07-03"))
-    );
-    assert_eq!(bill(0)["billed"].to_string(), "48.00");
-    assert_eq!(bill(1)["date"], "2023-02-14");
-    assert_eq!(bill(1)["billed"].to_string(), "310.00");
-    for i in 0..2 {
-        assert_eq!(
-            (bill(i)["open"].as_bool(), bill(i)["owes"].to_string()),
-            (Some(false), "0.00".into())
-        );
-    }
-
-    let p = readers::payments_list(&site, &RangeArgs::default()).unwrap();
-    let states: Vec<_> = p["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|r| {
-            (
-                r["id"].as_str().unwrap(),
-                r["date"].as_str().unwrap(),
-                r["kind"].as_str().unwrap(),
-                r["state"].as_str().unwrap(),
-                r["amount"].to_string(),
-            )
-        })
-        .collect();
-    let want = [
-        ("926", "2023-05-09", "refund", "unconfirmed", "50.00"),
-        ("925", "2023-04-02", "payment", "settled", "129.00"),
-        ("924", "2023-03-01", "payment", "unconfirmed", "150.00"),
-        ("923", "2023-02-20", "discount", "settled", "31.00"),
-    ];
-    assert_eq!(states, want.map(|(a, b, c, d, e)| (a, b, c, d, e.to_string())));
-    assert_eq!(p["items"][2]["subtype"], "EXAMPLE_SUBTYPE");
-
-    let mut out = Vec::new();
-    readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
-    assert!(!String::from_utf8(out.clone()).unwrap().contains("dummy-auth-ref"));
-    let lines = stream_of(&out);
-    let invoices = of_type(&lines, "Invoice");
-    assert_eq!(invoices.len(), 2);
-    assert!(invoices.iter().all(|i| i["status"] == "balanced"));
-    let payments = of_type(&lines, "PaymentReconciliation");
-    assert_eq!(payments.len(), 1);
-    assert_eq!(payments[0]["paymentDate"], "2023-04-02");
-    assert_eq!(payments[0]["paymentAmount"]["value"].to_string(), "129.00");
-}
-
-#[test]
-fn an_account_that_owes_and_says_not_which_bill_is_refused() {
-    let server = serve(string_routes("20.00"));
-    let env = reader_env(&server, "string-owes");
-    let site = Site::open(&env, &adult1()).unwrap();
-    let a = readers::accounts_list(&site).unwrap()["items"][0].clone();
-    assert_eq!(a["owes"].to_string(), "20.00");
-    assert!(a["owed_on_bills"].is_null());
-    assert!(
-        env.warnings
-            .lines()
-            .iter()
-            .any(|w| w.contains("no bill says what is owed on it")),
-        "{:?}",
-        env.warnings.lines()
-    );
-    let mut out = Vec::new();
-    let e = readers::export(&site, &server.base, &mut out, None, None, None)
-        .err()
-        .unwrap();
-    assert_eq!(e.exit_code(), 5);
-    assert!(out.is_empty(), "nothing is streamed");
-    let bills = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
-    assert!(bills["items"][0]["owes"].is_null(), "{bills}");
-}
-
 /// The member API takes no date, so `--since` drops nothing: the header
-/// names every type unbounded (DESIGN §1). An annual fee whose period
-/// began before `since` and was paid after it still arrives `balanced`.
+/// names every type unbounded (DESIGN §1). A settled charge whose period
+/// began before `since` still arrives, `balanced`.
 #[test]
 fn records_export_since_drops_nothing_and_says_so() {
     let server = serve(reader_routes());
     let env = reader_env(&server, "since");
     let site = Site::open(&env, &adult1()).unwrap();
     let mut out = Vec::new();
-    readers::export(&site, &server.base, &mut out, None, None, Some("2025-6-1")).unwrap();
+    readers::export(&site, &server.base, &mut out, None, None, Some("2022-6-1")).unwrap();
     let lines = stream_of(&out);
-    assert_eq!(lines[0]["since"], "2025-06-01");
+    assert_eq!(lines[0]["since"], "2022-06-01");
     assert_eq!(
         lines[0]["since_unbounded"],
         json!(["Organization", "Patient", "Account", "Invoice", "PaymentReconciliation"])
@@ -1335,8 +1316,13 @@ fn records_export_since_drops_nothing_and_says_so() {
     let resources = |l: &[serde_json::Value]| l[1..l.len() - 1].to_vec();
     let whole = stream_of(&whole);
     assert_eq!(resources(&lines).len(), resources(&whole).len());
-    assert_eq!(of_type(&lines, "Invoice").len(), 3);
-    assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 1);
+    assert_eq!(of_type(&lines, "Invoice").len(), 4);
+    assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 2);
+    let before = of_type(&lines, "Invoice")
+        .into_iter()
+        .find(|i| i["id"] == "bill-1001-2366")
+        .unwrap();
+    assert_eq!(before["status"], "balanced");
     let warnings = env.warnings.lines();
     assert_eq!(
         warnings
@@ -1381,16 +1367,16 @@ fn records_export_takes_only_this_sign_ins_patient_and_clinic() {
 /// stream, and the error is the command's.
 #[test]
 fn a_history_short_of_its_total_or_unreadable_is_exit_5_before_the_stream() {
-    let short = with(reader_routes(), &page_at(2), r#"{"total": 8, "data": []}"#);
+    let short = with(reader_routes(), &page_at(2), r#"{"total": 15, "data": []}"#);
     let three_places = with(
         reader_routes(),
         &page_at(1),
         &edited(
             HISTORY_1,
-            r#""amount": 600.00,
-      "outstandingBalance": 600.00"#,
-            r#""amount": 600.005,
-      "outstandingBalance": 600.00"#,
+            r#""amount": 455.46,
+      "outstandingBalance": 455.46"#,
+            r#""amount": 455.465,
+      "outstandingBalance": 455.46"#,
         ),
     );
     let not_json = {
@@ -1399,7 +1385,7 @@ fn a_history_short_of_its_total_or_unreadable_is_exit_5_before_the_stream() {
         r
     };
     for (tag, routes, says) in [
-        ("short", short, "counts 8 rows and its pages held 3"),
+        ("short", short, "counts 15 rows and its pages held 5"),
         ("places", three_places, "MemberPaymentHistoryAll.data.amount"),
         ("html", not_json, "with no JSON"),
     ] {
@@ -1412,30 +1398,31 @@ fn a_history_short_of_its_total_or_unreadable_is_exit_5_before_the_stream() {
             .unwrap();
         assert_eq!(e.exit_code(), 5, "{tag}: {e}");
         assert!(e.to_string().contains(says), "{tag}: {e}");
-        assert!(!e.to_string().contains("600.005"), "{e}");
+        assert!(!e.to_string().contains("455.465"), "{e}");
         assert!(out.is_empty(), "{tag}");
     }
 }
 
 #[test]
 fn a_page_shorter_than_asked_is_read_on_to_the_total_and_a_repeat_once() {
-    // Page 2 repeats the first page's last row, as an offset page does when
-    // a row arrives between two reads; the total counts it.
+    // Page 2 repeats the first page's last row, a charge, as an offset page
+    // does when a row arrives between two reads; its total counts that row.
     let repeated = edited(
         HISTORY_2,
         r#""data": ["#,
-        r#""data": [{"id": 503, "memberPaymentTypeId": "AnnualStorageFee", "timestamp": "2025-01-02T08:00:00", "amount": 600.00, "outstandingBalance": 0.00},"#,
+        r#""data": [{"id": 2366, "memberPaymentTypeId": "ExampleOtherFee", "timestamp": "2020-07-22T16:01:50", "amount": 105.11, "outstandingBalance": 0.00, "recurringFeeName": "Fee D"},"#,
     );
     let server = serve(with(
         reader_routes(),
         &page_at(2),
-        &edited(&repeated, r#""total": 8"#, r#""total": 9"#),
+        &edited(&repeated, r#""total": 15"#, r#""total": 16"#),
     ));
     let env = reader_env(&server, "repeat");
     let site = Site::open(&env, &adult1()).unwrap();
-    // The total, 9, is the 8 rows and the repeat: page 2 holds 6.
+    // Page 2 holds 11 rows: the repeat, and the 10 that make up the first
+    // answer's total, 15.
     let e = readers::bills_list(&site, false, &RangeArgs::default());
-    assert_eq!(ids(&e.unwrap()), ["501", "503", "506"]);
+    assert_eq!(ids(&e.unwrap()), ["2271", "8077", "5561", "2366"]);
 }
 
 /// A server that ignores `pageNumber` answers page 1 again: exit 5 at page
@@ -1483,8 +1470,8 @@ fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
         MEMBER_AT,
         &edited(
             MEMBER_FIXTURE,
-            r#""billingBalance": 600.00"#,
-            r#""billingBalance": 650.00"#,
+            r#""billingBalance": 509.29"#,
+            r#""billingBalance": 571.90"#,
         ),
     ));
     let env = reader_env(&server, "balance");
@@ -1495,7 +1482,7 @@ fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
     assert_eq!(
         warnings
             .iter()
-            .filter(|w| w.contains("add to 600.00") && w.contains("650.00 owed"))
+            .filter(|w| w.contains("add to 509.29") && w.contains("571.90 owed"))
             .count(),
         2,
         "{warnings:?}"
@@ -1507,7 +1494,7 @@ fn a_balance_the_open_bills_do_not_add_to_stops_the_export() {
     assert_eq!(e.exit_code(), 5);
     assert!(e.to_string().contains("writes no stream"), "{e}");
     assert!(
-        !e.to_string().contains("600.00") && !e.to_string().contains("650.00"),
+        !e.to_string().contains("509.29") && !e.to_string().contains("571.90"),
         "no figures: {e}"
     );
     assert!(out.is_empty());
@@ -1527,14 +1514,14 @@ fn a_clinic_not_read_is_a_warning_for_the_listings_and_stops_the_export() {
     let no_currency = with(
         reader_routes(),
         CLINIC_AT,
-        r#"{"id": 7, "name": "Example Fertility Clinic", "currencySymbol": "$"}"#,
+        r#"{"id": 7, "name": "Example Clinic", "currencySymbol": "$"}"#,
     );
     for (tag, routes, warned) in [("clinic-down", down, true), ("clinic-no-currency", no_currency, false)] {
         let server = serve(routes);
         let env = reader_env(&server, tag);
         let site = Site::open(&env, &adult1()).unwrap();
         let v = readers::accounts_list(&site).unwrap();
-        assert_eq!(v["items"][0]["provider"], "Example Fertility Clinic", "{tag}");
+        assert_eq!(v["items"][0]["provider"], "Example Clinic", "{tag}");
         assert!(v["items"][0]["currency"].is_null(), "{tag}");
         assert_eq!(
             env.warnings
@@ -1582,11 +1569,11 @@ fn a_row_of_an_unknown_type_naming_no_fee_is_no_bill_and_an_invoice_skip() {
     let site = Site::open(&env, &adult1()).unwrap();
     assert_eq!(
         ids(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap()),
-        ["501", "503", "506"]
+        ["2271", "8077", "5561", "2366"]
     );
     assert_eq!(
         ids(&readers::payments_list(&site, &RangeArgs::default()).unwrap()),
-        ["504", "502", "505"]
+        ["6379", "5995", "6792", "8670", "8148", "8545", "7024", "2435"]
     );
     let warnings = env.warnings.lines();
     assert!(
@@ -1611,7 +1598,425 @@ fn a_row_of_an_unknown_type_naming_no_fee_is_no_bill_and_an_invoice_skip() {
         !lines.last().unwrap().to_string().contains("WriteOff"),
         "the type stays out of the stream"
     );
-    assert_eq!(of_type(&lines, "Invoice").len(), 3);
+    assert_eq!(of_type(&lines, "Invoice").len(), 4);
+}
+
+// -------------------------------------------- the forms a field comes in
+
+/// One page of history, synthetic: each row in a mix of forms no other row
+/// has, with optional fields of its own.
+const FORMS_FIXTURE: &str = include_str!("fixtures/history-forms.json");
+
+/// The member's account owing `balance`, with `history` its one page.
+fn one_page(balance: &str, history: &str) -> Routes {
+    let mut r = with(
+        reader_routes(),
+        MEMBER_AT,
+        &edited(
+            MEMBER_FIXTURE,
+            r#""billingBalance": 509.29"#,
+            &format!(r#""billingBalance": {balance}"#),
+        ),
+    );
+    r.insert(page_at(1), ok(history));
+    r.remove(&page_at(2));
+    r
+}
+
+fn forms_routes() -> Routes {
+    one_page("460.35", FORMS_FIXTURE)
+}
+
+fn items(v: &serde_json::Value) -> Vec<serde_json::Value> {
+    v["items"].as_array().unwrap().clone()
+}
+
+/// An amount as printed, or `null`.
+fn printed(v: &serde_json::Value) -> serde_json::Value {
+    if v.is_null() {
+        json!(null)
+    } else {
+        json!(v.to_string())
+    }
+}
+
+/// The form of a date: whether it is .NET's, and whether it is empty.
+fn date_form(s: &str) -> &'static str {
+    match (s.contains('T'), s.contains("0001")) {
+        (true, false) => "date-time",
+        (true, true) => "empty date-time",
+        (false, false) => "written out",
+        (false, true) => "empty written out",
+    }
+}
+
+/// The forms a row's fields come in, as `(field, form)`.
+fn forms(row: &serde_json::Value) -> Vec<(&'static str, &'static str)> {
+    let text = |k: &str| row[k].as_str();
+    let mut out = Vec::new();
+    for k in ["amount", "outstandingBalance", "allocationDiscountAmount"] {
+        if row[k].is_number() {
+            out.push((k, "number"));
+        } else if row[k].is_string() {
+            out.push((k, "string"));
+        }
+    }
+    for k in ["timestamp", "billingCycleStartDate", "billingCycleEndDate"] {
+        out.extend(text(k).map(|s| (k, date_form(s))));
+    }
+    let freeze = row["memberFreezeEvent"]["freezeDate"]
+        .as_str()
+        .or(text("memberFreezeEventDate"));
+    out.extend(freeze.map(|s| ("freezeDate", date_form(s))));
+    let type_form = |s: &str| if s.len() == 3 { "type code" } else { "type word" };
+    out.extend(text("memberPaymentTypeId").map(|s| ("memberPaymentTypeId", type_form(s))));
+    for k in ["cptcode1", "cptcode2", "cptcode3"] {
+        out.extend(text(k).map(|s| ("cptcode", if s == "N/A" { "N/A" } else { "a code" })));
+    }
+    out
+}
+
+/// The fixture the tests below read holds every form of every field, and no
+/// two of its rows have the same set of forms or the same fields.
+#[test]
+fn the_forms_fixture_holds_every_form_and_no_two_rows_alike() {
+    use std::collections::BTreeSet;
+    let page: serde_json::Value = serde_json::from_str(FORMS_FIXTURE).unwrap();
+    let rows = page["data"].as_array().unwrap();
+    assert_eq!(page["total"], rows.len());
+    let held: BTreeSet<(&str, &str)> = rows.iter().flat_map(forms).collect();
+    let dates = ["date-time", "written out", "empty date-time", "empty written out"];
+    for (field, want) in [
+        ("amount", &["number", "string"][..]),
+        ("outstandingBalance", &["number", "string"]),
+        ("allocationDiscountAmount", &["number", "string"]),
+        ("timestamp", &dates[..2]),
+        ("billingCycleStartDate", &dates),
+        ("billingCycleEndDate", &dates),
+        ("freezeDate", &dates[..2]),
+        ("memberPaymentTypeId", &["type code", "type word"]),
+        ("cptcode", &["a code", "N/A"]),
+    ] {
+        for form in want {
+            assert!(held.contains(&(field, *form)), "{field}: {form}");
+        }
+    }
+    let sets: BTreeSet<BTreeSet<&str>> = rows
+        .iter()
+        .map(|r| {
+            forms(r)
+                .into_iter()
+                .map(|(_, form)| form.trim_start_matches("empty "))
+                .filter(|form| *form != "a code")
+                .collect()
+        })
+        .collect();
+    assert_eq!(sets.len(), rows.len(), "each row has its own set of forms");
+    let fields: BTreeSet<BTreeSet<&String>> = rows.iter().map(|r| r.as_object().unwrap().keys().collect()).collect();
+    assert_eq!(fields.len(), rows.len(), "each row has its own fields");
+}
+
+/// A charge's fields read the same in whichever form they come: amounts as
+/// numbers and strings, dates as date-times and written out, types as words,
+/// codes and none, and `N/A` as no code.
+#[test]
+fn a_charge_s_fields_are_read_in_every_form() {
+    let server = serve(forms_routes());
+    let env = reader_env(&server, "forms-bills");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let bills: Vec<serde_json::Value> = items(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap())
+        .iter()
+        .map(|b| {
+            let shown = readers::bill_show(&site, b["id"].as_str().unwrap()).unwrap();
+            json!([
+                b["id"],
+                b["date"],
+                b["end"],
+                b["posted"],
+                b["type"],
+                b["description"],
+                b["freeze_date"],
+                printed(&b["billed"]),
+                printed(&b["owes"]),
+                b["open"],
+                shown["codes"],
+                printed(&shown["allocated_discount"]),
+            ])
+        })
+        .collect();
+    #[rustfmt::skip]
+    let want = json!([
+        ["7503", "2024-08-01", null, "2024-08-01", "ExampleFee", "Fee E", "2023-04-09", "367.39", "0.00", false, [], "25.30"],
+        ["2612", "2023-05-11", "2023-06-23", "2023-05-24", "ExampleFee", "Fee C", null, "744.54", null, false, ["12345", "A1234"], null],
+        ["3772", "2022-09-27", null, "2022-09-27", "CHG", "Fee H", "2021-03-21", "860.70", null, false, ["12345"], null],
+        ["4982", "2022-06-14", null, "2022-06-14", "ExampleFee", "Fee F", "2024-08-26", "576.00", null, false, ["A1234"], "14.51"],
+        ["5900", "2022-02-09", null, "2022-02-09", "chg", "chg", "2020-12-28", "320.60", "137.57", true, ["A1234", "12345"], null],
+        ["8638", "2020-12-01", null, "2020-11-08", "CHG", "Fee A", null, "392.53", "322.78", true, [], null],
+        ["6491", "2020-08-02", "2020-11-30", "2020-07-28", "ExampleFee", "Fee B", null, "67.00", null, false, [], null],
+        ["6774", "2020-04-20", "2020-07-28", "2020-03-22", "ExampleFee", "Fee G", null, "117.00", "0.00", false, ["A1234"], "27.00"],
+        ["2585", "2019-08-27", "2019-09-21", "2019-09-13", null, "Fee D", "2021-06-07", "329.00", null, false, ["12345"], "33.87"],
+    ]);
+    assert_eq!(json!(bills), want);
+    let a = &items(&readers::accounts_list(&site).unwrap())[0];
+    assert_eq!(
+        (a["bills"].as_u64(), a["open_bills"].as_u64(), a["payments"].as_u64()),
+        (Some(9), Some(2), Some(7))
+    );
+    // The charges that say what is owed on them add to the balance.
+    assert_eq!(
+        (a["owes"].to_string(), a["owed_on_bills"].to_string()),
+        ("460.35".into(), "460.35".into())
+    );
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+}
+
+/// The same for the payments, refunds, discounts and credits, with a
+/// `transactionStatus` and without.
+#[test]
+fn a_payment_s_fields_are_read_in_every_form() {
+    let server = serve(forms_routes());
+    let env = reader_env(&server, "forms-payments");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
+    let payments: Vec<serde_json::Value> = items(&v)
+        .iter()
+        .map(|p| {
+            assert_eq!(p["settled"], p["state"] == "settled");
+            json!([
+                p["id"],
+                p["date"],
+                p["kind"],
+                p["type"],
+                p["subtype"],
+                printed(&p["amount"]),
+                p["method"],
+                p["note"],
+                p["state"],
+            ])
+        })
+        .collect();
+    #[rustfmt::skip]
+    let want = json!([
+        ["4637", "2024-04-15", "credit", "Credit", null, "307.06", null, "Note 5", "settled"],
+        ["2549", "2023-12-29", "payment", "PAY", null, "326.60", null, null, "unconfirmed"],
+        ["6362", "2023-11-13", "payment", "PAY", null, "168.77", "PayPal", null, "failed"],
+        ["8080", "2023-09-18", "discount", "DIS", null, "467.41", null, null, "settled"],
+        ["5371", "2022-12-25", "payment", "MemberInitiatedPayment", null, "316.57", "MasterCard", null, "settled"],
+        ["6873", "2021-08-27", "refund", "RefundViaCheck", null, "514.60", "Check", "Note 6", "settled"],
+        ["8558", "2021-07-24", "discount", "InsuranceDiscount", null, "250.73", null, null, "settled"],
+        ["5407", "2021-04-11", "refund", "PAY", null, "394.00", null, null, "settled"],
+        ["3634", "2021-02-23", "payment", "DirectPaymentToCenterByCheck", null, "100.00", "Check", null, "settled"],
+        ["5019", "2020-06-06", "credit", "CHG", null, "157.20", null, "Note 1", "unconfirmed"],
+        ["4162", "2019-11-29", "payment", "CenterInitiatedPayment", null, "69.47", null, "Note 7", "failed"],
+        ["5174", "2019-05-22", "payment", "PAY", null, "21.42", "Credit Card", "Note 2", "pending"],
+        ["8165", "2019-05-21", "refund", "PAY", "EXAMPLE_REFUND", "121.40", null, "Note 2", "unconfirmed"],
+        ["8911", "2019-03-02", "payment", "PAY", null, "101.47", "Discover", "Note 4", "settled"],
+    ]);
+    assert_eq!(json!(payments), want);
+    for absent in ["1111", "dummy-auth-ref"] {
+        assert!(
+            FORMS_FIXTURE.contains(absent) && !v.to_string().contains(absent),
+            "{absent}"
+        );
+    }
+}
+
+/// The export of the same rows: every charge an Invoice, with a total only
+/// where the charge says what is owed on it, and the settled payments.
+#[test]
+fn records_export_writes_rows_of_every_form() {
+    let server = serve(forms_routes());
+    let env = reader_env(&server, "forms-export");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    assert!(finished.trailer.complete);
+    let text = String::from_utf8(out.clone()).unwrap();
+    for absent in ["4242", "1111", "dummy-auth-ref", "N/A"] {
+        assert!(!text.contains(absent), "{absent}");
+    }
+    let lines = stream_of(&out);
+    let totals: Vec<serde_json::Value> = of_type(&lines, "Invoice")
+        .iter()
+        .map(|i| json!([i["identifier"][0]["value"], printed(&i["totalNet"]["value"])]))
+        .collect();
+    assert_eq!(
+        json!(totals),
+        json!([
+            ["2585", null],
+            ["6774", "0.00"],
+            ["6491", null],
+            ["8638", "322.78"],
+            ["5900", "137.57"],
+            ["4982", null],
+            ["3772", null],
+            ["2612", null],
+            ["7503", "0.00"],
+        ])
+    );
+    // A period's start as a date-time, and its end written out.
+    assert_eq!(
+        of_type(&lines, "Invoice")[2]["contained"][0]["occurrencePeriod"],
+        json!({"start": "2020-08-02", "end": "2020-11-30"})
+    );
+    let payments: Vec<serde_json::Value> = of_type(&lines, "PaymentReconciliation")
+        .iter()
+        .map(|p| {
+            json!([
+                p["id"],
+                p["paymentDate"],
+                printed(&p["paymentAmount"]["value"]),
+                p["disposition"]
+            ])
+        })
+        .collect();
+    assert_eq!(
+        json!(payments),
+        json!([
+            ["payment-8911", "2019-03-02", "101.47", "Paid by Discover"],
+            ["payment-3634", "2021-02-23", "100.00", "Paid by Check"],
+            ["payment-5371", "2022-12-25", "316.57", "Paid by MasterCard"],
+        ])
+    );
+    let skipped = lines.last().unwrap()["skipped"].to_string();
+    for says in [
+        "2 payment(s) turned down (declined, failed, voided), 1 scheduled or pending and 1 not shown to have settled",
+        "3 refund(s)",
+        "2 discount(s)",
+        "2 credit(s)",
+    ] {
+        assert!(skipped.contains(says), "{says}: {skipped}");
+    }
+}
+
+// --------------------------------- charges that say nothing of what is owed
+
+/// A history none of whose charges says what is owed on it: the field is
+/// missing, or `null`.
+fn unsaid_history() -> String {
+    let charge = |id: u64, at: &str, kind: &str, fee: Option<&str>, amount: &str| {
+        json!({
+            "id": id,
+            "memberPaymentTypeId": kind,
+            "timestamp": at,
+            "oneTimeFeeName": fee,
+            "billingNote": "Note 1",
+            "amount": amount,
+        })
+    };
+    let payment = |id: u64, at: &str, kind: &str, amount: &str, card: Option<&str>, status: Option<&str>| {
+        json!({
+            "id": id,
+            "memberPaymentTypeId": kind,
+            "timestamp": at,
+            "amount": amount,
+            "creditCardSystemStatus": card,
+            "transactionStatus": status,
+        })
+    };
+    let check = "DirectPaymentToCenterByCheck";
+    let member = "MemberInitiatedPayment";
+    let mut null = charge(7056, "2024-12-03T20:34:00", "ExampleFee", Some("Fee C"), "266.69");
+    null["outstandingBalance"] = json!(null);
+    let rows = [
+        payment(6540, "2024-03-02T13:41:21", "PAY", "-259.64", None, Some("settling")),
+        charge(3569, "2021-02-08T03:25:35", "CHG", None, "60.31"),
+        payment(8688, "2021-04-18T17:48:47", check, "-218.28", None, None),
+        charge(3689, "2023-12-31T21:26:10", "ExampleFee", Some("Fee A"), "779.61"),
+        payment(4444, "2022-01-14T17:11:40", "PAY", "-494.06", Some("EXP"), None),
+        null,
+        payment(7552, "2024-05-09T10:31:42", member, "-69.35", None, None),
+        charge(3026, "2020-12-12T21:31:42", "CHG", Some("Fee B"), "90.38"),
+        payment(
+            7825,
+            "2021-12-09T17:30:13",
+            member,
+            "-291.37",
+            Some("ACC"),
+            Some("settled"),
+        ),
+    ];
+    json!({ "total": rows.len(), "data": rows }).to_string()
+}
+
+/// An account that owes nothing owes nothing on any charge: each is owed 0,
+/// and the export writes each balanced.
+#[test]
+fn a_balance_of_zero_settles_the_charges_that_do_not_say() {
+    let server = serve(one_page("0.00", &unsaid_history()));
+    let env = reader_env(&server, "unsaid-zero");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = &items(&readers::accounts_list(&site).unwrap())[0];
+    assert_eq!(
+        (a["bills"].as_u64(), a["open_bills"].as_u64(), a["payments"].as_u64()),
+        (Some(4), Some(0), Some(5))
+    );
+    assert_eq!(
+        (a["owes"].to_string(), a["owed_on_bills"].to_string()),
+        ("0.00".into(), "0.00".into())
+    );
+    let bills = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
+    assert_eq!(ids(&bills), ["7056", "3689", "3569", "3026"]);
+    for b in items(&bills) {
+        assert_eq!(
+            (b["owes"].to_string(), b["open"].as_bool()),
+            ("0.00".into(), Some(false))
+        );
+    }
+    assert!(items(&readers::bills_list(&site, true, &RangeArgs::default()).unwrap()).is_empty());
+    let shown = readers::bill_show(&site, "3569").unwrap();
+    assert_eq!(shown["owes"].to_string(), "0.00");
+
+    let mut out = Vec::new();
+    let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    assert!(finished.trailer.complete);
+    let lines = stream_of(&out);
+    let invoices = of_type(&lines, "Invoice");
+    assert_eq!(invoices.len(), 4);
+    for i in invoices {
+        assert_eq!(i["status"], "balanced", "{}", i["id"]);
+        assert_eq!(i["totalNet"]["value"].to_string(), "0.00", "{}", i["id"]);
+    }
+    assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 2);
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+}
+
+/// An account that owes, when no charge says what is owed on it: which are
+/// open is not known. The listings warn and leave what is owed unsaid, and
+/// the export writes nothing.
+#[test]
+fn a_balance_above_zero_that_no_charge_says_warns_and_stops_the_export() {
+    let server = serve(one_page("164.45", &unsaid_history()));
+    let env = reader_env(&server, "unsaid-owed");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = &items(&readers::accounts_list(&site).unwrap())[0];
+    assert_eq!(a["owes"].to_string(), "164.45");
+    assert!(a["owed_on_bills"].is_null());
+    assert_eq!((a["bills"].as_u64(), a["open_bills"].as_u64()), (Some(4), Some(0)));
+    let warned = || {
+        env.warnings
+            .lines()
+            .iter()
+            .filter(|w| w.contains("164.45 owed") && w.contains("no bill says what is owed on it"))
+            .count()
+    };
+    assert_eq!(warned(), 1, "{:?}", env.warnings.lines());
+    let bills = readers::bills_list(&site, false, &RangeArgs::default()).unwrap();
+    assert_eq!(ids(&bills), ["7056", "3689", "3569", "3026"]);
+    for b in items(&bills) {
+        assert!(b["owes"].is_null(), "{b}");
+        assert_eq!(b["open"], false);
+    }
+    assert_eq!(warned(), 2, "{:?}", env.warnings.lines());
+
+    let mut out = Vec::new();
+    let e = readers::export(&site, &server.base, &mut out, None, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(e.to_string().contains("writes no stream"), "{e}");
+    assert!(!e.to_string().contains("164.45"), "no figures: {e}");
+    assert!(out.is_empty());
 }
 
 #[test]

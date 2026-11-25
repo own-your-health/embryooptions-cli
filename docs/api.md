@@ -220,9 +220,9 @@ the others are marked *bundle*.
   `InsuranceDiscount`), `Credit`,
   `MemberDisputedChargeResolutionProcessInitiated`, and `PastDue`,
   `BalanceForward` and `Through` (*bundle*).
-- A coded row's `amount` can be a string of a decimal, negative for a
-  payment and positive for a charge. `outstandingBalance` and
-  `transactionStatus` are optional.
+- `amount`, `outstandingBalance` and `allocationDiscountAmount` are each a
+  JSON number or a string of a decimal. Money paid is negative and money
+  charged positive. Any field can be missing.
 - `timestamp`, `billingCycleStartDate` and `billingCycleEndDate` are .NET
   date-times or written out, such as `05 March, 2024 08:15:42` (an invented
   example). A code field can hold the text `N/A`, which is read as no code.
@@ -300,11 +300,11 @@ How the answers are read (`src/reads.rs`):
   an explicit settled status settles it. A row of any other code that names
   no fee is of a type not known (above).
 - A charge is voided when its `transactionStatus` says void or cancel.
-- `outstandingBalance` is optional. Without one on any charge, no row says
-  whether its bill is open. When the account's `billingBalance` is 0 every charge is
-  owed 0; when it is above 0 and no charge says what is owed on it,
-  `accounts list` and `bills list` warn, the charges' `owes` is null and
-  `records export` is exit 5, writing nothing.
+- A charge without `outstandingBalance` does not say what is owed on it.
+  When no charge says, the account's `billingBalance` decides: 0 means
+  nothing is owed on any of them, and above 0 `accounts list` and
+  `bills list` warn, the charges' `owes` is null and `records export` is
+  exit 5, writing nothing.
 - A payment is settled only on positive evidence (`Row::settlement`). The
   states are decided in this order:
   1. `failed`: its card was turned down (`DEC`, `EXP`, `INV`, `ERR`), or its
@@ -333,8 +333,7 @@ How the answers are read (`src/reads.rs`):
 
 ### Open questions
 
-Each of these is read from the JavaScript alone and is not confirmed on the
-site:
+Each of these is not confirmed on the site:
 
 - every code `memberPaymentTypeId` takes, and every value of
   `paymentSubType`;
