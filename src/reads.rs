@@ -233,16 +233,26 @@ impl Row {
         self.period_start.as_deref().or(self.date.as_deref())
     }
 
-    /// A charge still owed on.
+    /// A charge still owed on: a voided one is not, whatever it says.
     pub fn is_open(&self) -> bool {
-        self.kind == Kind::Charge && self.outstanding.is_some_and(|c| c.0 > 0)
+        self.kind == Kind::Charge && !self.is_voided() && self.outstanding.is_some_and(|c| c.0 > 0)
     }
 
+    /// A charge, not voided, that does not say what is owed on it.
+    pub fn is_unsaid(&self) -> bool {
+        self.kind == Kind::Charge && !self.is_voided() && self.outstanding.is_none()
+    }
+
+    /// The status is exactly that of a voided charge. A status that only
+    /// mentions it (`cancellation requested`) leaves the charge owed.
     pub fn is_voided(&self) -> bool {
-        self.transaction_status.as_deref().is_some_and(|s| {
-            let s = s.to_ascii_lowercase();
-            s.contains("void") || s.contains("cancel")
-        })
+        let status = self
+            .transaction_status
+            .as_deref()
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        ["void", "voided", "cancelled", "canceled"].contains(&status.as_str())
     }
 
     /// Where the payment stands on `today` (`YYYY-MM-DD`). Only positive
@@ -260,6 +270,7 @@ impl Row {
             "return",
             "bounce",
             "chargeback",
+            "chargedback",
             "error",
             "unauthor",
         ];
@@ -307,10 +318,11 @@ impl Row {
             .trim()
             .to_ascii_lowercase();
         let card = self.card_status.as_deref().unwrap_or("").trim();
+        let joined = squeezed(&status);
         if ["DEC", "EXP", "INV", "ERR"]
             .iter()
             .any(|bad| card.eq_ignore_ascii_case(bad))
-            || FAILED.iter().any(|n| status.contains(n))
+            || FAILED.iter().any(|n| joined.contains(n))
         {
             return Settlement::Failed;
         }
@@ -357,8 +369,9 @@ impl Row {
 pub struct Page {
     /// The rows with an id.
     pub rows: Vec<Row>,
-    /// The kinds of the rows without one, which cannot be placed.
-    pub unidentified: Vec<Kind>,
+    /// The rows without one, which cannot be placed: each one's kind, and
+    /// its JSON, all that shows a later page repeats it.
+    pub unidentified: Vec<(Kind, Value)>,
     /// How many rows the page held, with an id or not.
     pub len: usize,
     /// `total`: how many rows the history has across its pages.
@@ -521,6 +534,16 @@ fn method(r: &Value) -> Option<String> {
     }
 }
 
+/// `s` in lower case without its spaces and punctuation: the API's words
+/// for one state are spelled `charged back`, `Charged_Back` and
+/// `charge-back`.
+fn squeezed(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
+}
+
 fn row(r: &Value) -> Result<Option<Row>, CliError> {
     let at = "MemberPaymentHistoryAll.data";
     let type_id = text(r, "memberPaymentTypeId");
@@ -536,8 +559,10 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
     // says: money paid back, or a charge taken off.
     let code = type_id.as_deref().unwrap_or("").trim();
     let reversed = sub_type.as_deref().is_some_and(|t| {
-        let t = t.to_ascii_uppercase();
-        ["REFUND", "REVERS", "CHARGEBACK", "VOID"].iter().any(|w| t.contains(w))
+        let t = squeezed(t);
+        ["refund", "revers", "chargeback", "chargedback", "void"]
+            .iter()
+            .any(|w| t.contains(w))
     });
     let coded_as = kind;
     let kind = match (kind, signed) {
@@ -603,7 +628,10 @@ pub fn history_page(v: &Value) -> Result<Page, CliError> {
     for r in list {
         match row(r)? {
             Some(row) => rows.push(row),
-            None => unidentified.push(kind_of(text(r, "memberPaymentTypeId").as_deref(), fee(r).is_some())),
+            None => {
+                let kind = kind_of(text(r, "memberPaymentTypeId").as_deref(), fee(r).is_some());
+                unidentified.push((kind, r.clone()));
+            }
         }
     }
     Ok(Page {
@@ -876,6 +904,35 @@ mod tests {
             (auto(past, None, Some("settlement_declined")), Failed),
             (auto(past, None, Some("voided")), Failed),
             (auto(past, None, Some("gateway_rejected")), Failed),
+            // In whatever way its words are joined.
+            (auto(past, None, Some("chargeback")), Failed),
+            (auto(past, None, Some("charge-back")), Failed),
+            (auto(past, None, Some("Charge Back")), Failed),
+            (auto(past, None, Some("charged back")), Failed),
+            (auto(past, None, Some("Charged_Back")), Failed),
+            (auto(past, None, Some(" CHARGED - BACK ")), Failed),
+            (auto(past, Some("ACC"), Some("de-clined")), Failed),
+            (auto("2020-07-01", None, Some("charged back")), Failed),
+            (
+                r("DirectPaymentToCenterByCheck", past, None, Some("charged_back")),
+                Failed,
+            ),
+            // A word no list holds, whatever it holds part of.
+            (auto(past, Some("ACC"), Some("example")), Unconfirmed),
+            (auto(past, Some("ACC"), Some("charged")), Unconfirmed),
+            (auto(past, None, Some("back")), Unconfirmed),
+            (auto(past, None, Some("charge is back")), Unconfirmed),
+            (auto(past, None, Some("unpaid")), Unconfirmed),
+            (auto(past, None, Some("not settled")), Unconfirmed),
+            (auto(past, None, Some("paid in part")), Unconfirmed),
+            (r("CollectedPayment", past, None, Some("example")), Unconfirmed),
+            // Under way, not finished.
+            (auto(past, Some("ACC"), Some("processed")), Pending),
+            // An empty status is none.
+            (auto(past, None, Some("")), Unconfirmed),
+            (auto(past, None, Some("  ")), Unconfirmed),
+            (auto(past, Some("ACC"), Some("")), Settled),
+            (r("DirectPaymentToCenterByCheck", past, None, Some("")), Settled),
         ] {
             assert_eq!(
                 row.settlement(today),
@@ -891,6 +948,41 @@ mod tests {
     }
 
     #[test]
+    fn a_charge_is_open_when_it_is_owed_on_and_not_voided() {
+        let open = |kind: &str, owed: Value, status: Value| {
+            let r = row(
+                &json!({"id": 1, "memberPaymentTypeId": kind, "amount": 418.09, "outstandingBalance": owed,
+                "transactionStatus": status}),
+            )
+            .unwrap()
+            .unwrap();
+            (r.is_open(), r.is_unsaid())
+        };
+        for status in [json!(null), json!("open"), json!("example")] {
+            assert_eq!(open("CHG", json!("268.13"), status.clone()), (true, false), "{status}");
+            assert_eq!(open("CHG", json!(0), status.clone()), (false, false), "{status}");
+            assert_eq!(open("CHG", json!("-12.64"), status.clone()), (false, false), "{status}");
+            assert_eq!(open("CHG", json!(null), status.clone()), (false, true), "{status}");
+            assert_eq!(
+                open("Credit", json!("268.13"), status.clone()),
+                (false, false),
+                "{status}"
+            );
+            assert_eq!(open("Credit", json!(null), status.clone()), (false, false), "{status}");
+        }
+        for status in ["Voided", "VOID", "cancelled", " Canceled "] {
+            for owed in [json!("268.13"), json!(0), json!(null)] {
+                assert_eq!(open("CHG", owed, json!(status)), (false, false), "{status}");
+            }
+        }
+        // A status that only mentions it leaves the charge owed.
+        for status in ["cancellation requested", "void pending", "not voided", "avoided"] {
+            assert_eq!(open("CHG", json!("268.13"), json!(status)), (true, false), "{status}");
+            assert_eq!(open("CHG", json!(null), json!(status)), (false, true), "{status}");
+        }
+    }
+
+    #[test]
     fn a_coded_row_s_sign_and_subtype_say_which_way_the_money_went() {
         let kind = |v: Value| {
             let r = row(&v).unwrap().unwrap();
@@ -901,6 +993,20 @@ mod tests {
         assert_eq!(kind(pay("-896.97", "EXAMPLE_SUBTYPE")), (Kind::Payment, Some(89697)));
         assert_eq!(kind(pay("896.97", "EXAMPLE_SUBTYPE")), (Kind::Refund, Some(89697)));
         assert_eq!(kind(pay("-134.51", "EXAMPLE_REFUND")), (Kind::Refund, Some(13451)));
+        for back in [
+            "chargeback",
+            "Charge-Back",
+            "CHARGED BACK",
+            "charged_back",
+            "Re-fund",
+            "reversal",
+            "VOIDED",
+        ] {
+            assert_eq!(kind(pay("-134.51", back)), (Kind::Refund, Some(13451)), "{back}");
+        }
+        for forward in ["charge", "back", "charged", "charge is back", "fund", ""] {
+            assert_eq!(kind(pay("-134.51", forward)), (Kind::Payment, Some(13451)), "{forward}");
+        }
         assert_eq!(kind(chg("676.59")), (Kind::Charge, Some(67659)));
         assert_eq!(kind(chg("-676.59")), (Kind::Credit, Some(67659)));
         assert_eq!(
@@ -990,8 +1096,13 @@ mod tests {
             {"id": 3, "recurringFeeName": "Fee B", "amount": 315.22, "outstandingBalance": 0}], "total": 7}),
         )
         .unwrap();
+        let kinds: Vec<Kind> = p.unidentified.iter().map(|(k, _)| *k).collect();
         assert_eq!(
-            (p.rows.len(), p.unidentified.clone(), p.len, p.total, p.unpaged),
+            p.unidentified[1].1,
+            json!({"memberPaymentTypeId": "PAY", "creditCardSystemStatus": "DEC"})
+        );
+        assert_eq!(
+            (p.rows.len(), kinds, p.len, p.total, p.unpaged),
             (3, vec![Kind::Payment; 3], 6, Some(7), false)
         );
         let p = history_page(&json!([{"id": 1}])).unwrap();

@@ -1256,7 +1256,9 @@ fn records_export_never_writes_a_payment_that_has_not_settled() {
         -98.41,
         json!(null),
     ));
-    let total = 15 + 3;
+    // A word no list of states holds.
+    rows.push(row(904, "PAY", "2021-08-23T17:19:15", -856.87, json!("Example word")));
+    let total = 15 + 4;
     page["total"] = json!(total);
     let mut page1: serde_json::Value = serde_json::from_str(HISTORY_1).unwrap();
     page1["total"] = json!(total);
@@ -1278,6 +1280,7 @@ fn records_export_never_writes_a_payment_that_has_not_settled() {
     assert_eq!(state("901"), ("scheduled".into(), false));
     assert_eq!(state("902"), ("pending".into(), false));
     assert_eq!(state("903"), ("unconfirmed".into(), false));
+    assert_eq!(state("904"), ("unconfirmed".into(), false));
     assert_eq!(state("8545"), ("settled".into(), true));
 
     let mut out = Vec::new();
@@ -1290,7 +1293,7 @@ fn records_export_never_writes_a_payment_that_has_not_settled() {
     assert_eq!(ids, [json!("payment-8545"), json!("payment-5995")]);
     let skipped = lines.last().unwrap()["skipped"].to_string();
     assert!(
-        skipped.contains("3 scheduled or pending and 2 not shown to have settled"),
+        skipped.contains("3 scheduled or pending and 3 not shown to have settled"),
         "{skipped}"
     );
 }
@@ -1718,7 +1721,8 @@ fn the_forms_fixture_holds_every_form_and_no_two_rows_alike() {
 
 /// A charge's fields read the same in whichever form they come: amounts as
 /// numbers and strings, dates as date-times and written out, types as words,
-/// codes and none, and `N/A` as no code.
+/// codes and none, and `N/A` as no code. The charges that say what is owed on
+/// them account for the balance, so those that do not are owed 0.
 #[test]
 fn a_charge_s_fields_are_read_in_every_form() {
     let server = serve(forms_routes());
@@ -1747,14 +1751,14 @@ fn a_charge_s_fields_are_read_in_every_form() {
     #[rustfmt::skip]
     let want = json!([
         ["7503", "2024-08-01", null, "2024-08-01", "ExampleFee", "Fee E", "2023-04-09", "367.39", "0.00", false, [], "25.30"],
-        ["2612", "2023-05-11", "2023-06-23", "2023-05-24", "ExampleFee", "Fee C", null, "744.54", null, false, ["12345", "A1234"], null],
-        ["3772", "2022-09-27", null, "2022-09-27", "CHG", "Fee H", "2021-03-21", "860.70", null, false, ["12345"], null],
-        ["4982", "2022-06-14", null, "2022-06-14", "ExampleFee", "Fee F", "2024-08-26", "576.00", null, false, ["A1234"], "14.51"],
+        ["2612", "2023-05-11", "2023-06-23", "2023-05-24", "ExampleFee", "Fee C", null, "744.54", "0.00", false, ["12345", "A1234"], null],
+        ["3772", "2022-09-27", null, "2022-09-27", "CHG", "Fee H", "2021-03-21", "860.70", "0.00", false, ["12345"], null],
+        ["4982", "2022-06-14", null, "2022-06-14", "ExampleFee", "Fee F", "2024-08-26", "576.00", "0.00", false, ["A1234"], "14.51"],
         ["5900", "2022-02-09", null, "2022-02-09", "chg", "chg", "2020-12-28", "320.60", "137.57", true, ["A1234", "12345"], null],
         ["8638", "2020-12-01", null, "2020-11-08", "CHG", "Fee A", null, "392.53", "322.78", true, [], null],
-        ["6491", "2020-08-02", "2020-11-30", "2020-07-28", "ExampleFee", "Fee B", null, "67.00", null, false, [], null],
+        ["6491", "2020-08-02", "2020-11-30", "2020-07-28", "ExampleFee", "Fee B", null, "67.00", "0.00", false, [], null],
         ["6774", "2020-04-20", "2020-07-28", "2020-03-22", "ExampleFee", "Fee G", null, "117.00", "0.00", false, ["A1234"], "27.00"],
-        ["2585", "2019-08-27", "2019-09-21", "2019-09-13", null, "Fee D", "2021-06-07", "329.00", null, false, ["12345"], "33.87"],
+        ["2585", "2019-08-27", "2019-09-21", "2019-09-13", null, "Fee D", "2021-06-07", "329.00", "0.00", false, ["12345"], "33.87"],
     ]);
     assert_eq!(json!(bills), want);
     let a = &items(&readers::accounts_list(&site).unwrap())[0];
@@ -1821,8 +1825,8 @@ fn a_payment_s_fields_are_read_in_every_form() {
     }
 }
 
-/// The export of the same rows: every charge an Invoice, with a total only
-/// where the charge says what is owed on it, and the settled payments.
+/// The export of the same rows: every charge an Invoice with what is owed on
+/// it, said or settled by the balance, and the settled payments.
 #[test]
 fn records_export_writes_rows_of_every_form() {
     let server = serve(forms_routes());
@@ -1843,14 +1847,14 @@ fn records_export_writes_rows_of_every_form() {
     assert_eq!(
         json!(totals),
         json!([
-            ["2585", null],
+            ["2585", "0.00"],
             ["6774", "0.00"],
-            ["6491", null],
+            ["6491", "0.00"],
             ["8638", "322.78"],
             ["5900", "137.57"],
-            ["4982", null],
-            ["3772", null],
-            ["2612", null],
+            ["4982", "0.00"],
+            ["3772", "0.00"],
+            ["2612", "0.00"],
             ["7503", "0.00"],
         ])
     );
@@ -2017,6 +2021,411 @@ fn a_balance_above_zero_that_no_charge_says_warns_and_stops_the_export() {
     assert!(e.to_string().contains("writes no stream"), "{e}");
     assert!(!e.to_string().contains("164.45"), "no figures: {e}");
     assert!(out.is_empty());
+}
+
+/// The charges that say what is owed on them do not add up to the balance, a
+/// cent off included, or no balance is given: which of the others are open is
+/// not known, and they stay unsaid.
+#[test]
+fn charges_that_do_not_say_stay_unsaid_unless_the_rest_account_for_the_balance() {
+    for (balance, account) in [
+        ("460.36", "the account shows 460.36 owed"),
+        ("460.34", "the account shows 460.34 owed"),
+        ("760.16", "the account shows 760.16 owed"),
+        ("137.57", "the account shows 137.57 owed"),
+        ("0.00", "the account shows 0.00 owed"),
+        ("-71.48", "the account shows -71.48 owed"),
+        ("null", "the account does not show what is owed"),
+    ] {
+        let server = serve(one_page(balance, FORMS_FIXTURE));
+        let env = reader_env(&server, "forms-unsaid");
+        let site = Site::open(&env, &adult1()).unwrap();
+        let bills = items(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap());
+        let owes: Vec<serde_json::Value> = bills.iter().map(|b| json!([b["id"], printed(&b["owes"])])).collect();
+        assert_eq!(
+            json!(owes),
+            json!([
+                ["7503", "0.00"],
+                ["2612", null],
+                ["3772", null],
+                ["4982", null],
+                ["5900", "137.57"],
+                ["8638", "322.78"],
+                ["6491", null],
+                ["6774", "0.00"],
+                ["2585", null],
+            ]),
+            "{balance}"
+        );
+        let open = readers::bills_list(&site, true, &RangeArgs::default()).unwrap();
+        assert_eq!(ids(&open), ["5900", "8638"]);
+        let a = &items(&readers::accounts_list(&site).unwrap())[0];
+        assert_eq!(a["open_bills"], 2);
+        assert!(a["owed_on_bills"].is_null(), "{balance}: {a}");
+        let warnings = env.warnings.lines();
+        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        for w in &warnings {
+            let says = format!("{account}, and 5 bill(s) do not say what is owed on them");
+            assert!(w.starts_with(&says), "{balance}: {w}");
+        }
+
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 5);
+        assert!(
+            e.to_string().contains("a bill does not say what is owed on it")
+                && e.to_string().contains("writes no stream"),
+            "{e}"
+        );
+        for figure in [balance, "460.35", "137.57", "322.78"] {
+            assert!(!e.to_string().contains(figure), "no figures: {e}");
+        }
+        assert!(out.is_empty(), "{balance}");
+    }
+}
+
+/// When no charge says what is owed on it, a balance below zero, or none
+/// given, leaves that as unknown as one above zero does.
+#[test]
+fn a_balance_below_zero_or_not_given_settles_no_charge() {
+    for (balance, account) in [
+        ("-266.47", "the account shows -266.47 owed"),
+        ("-0.01", "the account shows -0.01 owed"),
+        ("null", "the account does not show what is owed"),
+    ] {
+        let server = serve(one_page(balance, &unsaid_history()));
+        let env = reader_env(&server, "unsaid-other");
+        let site = Site::open(&env, &adult1()).unwrap();
+        for b in items(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap()) {
+            assert_eq!((&b["owes"], &b["open"]), (&json!(null), &json!(false)), "{balance}");
+        }
+        let a = &items(&readers::accounts_list(&site).unwrap())[0];
+        assert!(a["owed_on_bills"].is_null(), "{balance}: {a}");
+        let warnings = env.warnings.lines();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        for w in &warnings {
+            let says = format!("{account}, and no bill says what is owed on it");
+            assert!(w.starts_with(&says), "{balance}: {w}");
+        }
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 5);
+        assert!(e.to_string().contains("writes no stream"), "{e}");
+        assert!(!e.to_string().contains(balance), "no figures: {e}");
+        assert!(out.is_empty(), "{balance}");
+    }
+}
+
+/// Charges that all say what is owed on them need no balance to be read, and
+/// an account with no charges has none to compare with its balance.
+#[test]
+fn charges_that_all_say_or_none_at_all_need_no_balance() {
+    let server = serve(with(
+        reader_routes(),
+        MEMBER_AT,
+        &edited(MEMBER_FIXTURE, r#""billingBalance": 509.29,"#, ""),
+    ));
+    let env = reader_env(&server, "said-no-balance");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = &items(&readers::accounts_list(&site).unwrap())[0];
+    assert!(a["owes"].is_null());
+    assert_eq!(a["owed_on_bills"].to_string(), "509.29");
+    let mut out = Vec::new();
+    let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    assert!(finished.trailer.complete);
+    assert_eq!(of_type(&stream_of(&out), "Invoice").len(), 4);
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+
+    let rows = [
+        payment_row(Some(7719), "2024-12-09T16:51:30", "-30.43", json!("settled")),
+        payment_row(Some(3847), "2023-06-22T12:02:15", "-463.00", json!("failed")),
+        payment_row(Some(8688), "2019-03-11T01:49:43", "-565.11", json!("completed")),
+        payment_row(Some(4404), "2021-04-03T21:09:07", "-710.17", json!("processing")),
+        payment_row(Some(6181), "2024-08-09T23:09:56", "-66.59", json!(null)),
+        payment_row(Some(2707), "2019-04-22T10:42:57", "-834.08", json!("captured")),
+    ];
+    let history = json!({ "total": rows.len(), "data": rows }).to_string();
+    for balance in ["164.17", "0.00", "-59.21", "null"] {
+        let server = serve(one_page(balance, &history));
+        let env = reader_env(&server, "no-charges");
+        let site = Site::open(&env, &adult1()).unwrap();
+        let a = &items(&readers::accounts_list(&site).unwrap())[0];
+        assert_eq!((a["bills"].as_u64(), a["payments"].as_u64()), (Some(0), Some(6)));
+        assert!(a["owed_on_bills"].is_null(), "{balance}: {a}");
+        let mut out = Vec::new();
+        let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+        assert!(finished.trailer.complete, "{balance}");
+        let lines = stream_of(&out);
+        assert!(of_type(&lines, "Invoice").is_empty());
+        assert_eq!(of_type(&lines, "PaymentReconciliation").len(), 3);
+        assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+    }
+}
+
+/// A charge with what is owed on it and a `transactionStatus`, each `null`
+/// for none.
+fn charge_row(
+    id: Option<u64>,
+    at: &str,
+    amount: &str,
+    owed: serde_json::Value,
+    status: serde_json::Value,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "memberPaymentTypeId": "CHG",
+        "timestamp": at,
+        "oneTimeFeeName": "Fee A",
+        "amount": amount,
+        "outstandingBalance": owed,
+        "transactionStatus": status,
+    })
+}
+
+/// A payment with a `transactionStatus`, `null` for none.
+fn payment_row(id: Option<u64>, at: &str, amount: &str, status: serde_json::Value) -> serde_json::Value {
+    json!({
+        "id": id,
+        "memberPaymentTypeId": "PAY",
+        "timestamp": at,
+        "amount": amount,
+        "transactionStatus": status,
+    })
+}
+
+/// Four charges that are owed on, settled or of which `said` says what is
+/// owed (`null` for one that does not say), and two voided ones: one that
+/// still says 397.76 is owed on it, and one that says nothing.
+fn voided_history(said: serde_json::Value) -> String {
+    let rows = [
+        payment_row(Some(5175), "2022-07-11T21:03:37", "-520.35", json!("settled")),
+        charge_row(
+            Some(4996),
+            "2023-11-26T10:29:54",
+            "159.96",
+            json!("159.96"),
+            json!(null),
+        ),
+        payment_row(Some(2898), "2021-06-10T08:29:28", "-71.11", json!("declined")),
+        charge_row(Some(9658), "2019-10-03T11:25:18", "792.39", said, json!(null)),
+        charge_row(Some(8550), "2019-02-12T21:43:20", "219.20", json!(0), json!("posted")),
+        charge_row(
+            Some(9835),
+            "2021-11-29T06:27:23",
+            "647.74",
+            json!("397.76"),
+            json!("Voided"),
+        ),
+        charge_row(Some(2580), "2023-08-22T21:18:15", "44.44", json!(27.51), json!("open")),
+        payment_row(Some(9854), "2022-11-26T15:12:08", "-276.96", json!("pending")),
+        payment_row(Some(4071), "2024-02-26T02:16:19", "-541.97", json!("completed")),
+        charge_row(
+            Some(6323),
+            "2020-11-27T08:11:53",
+            "550.43",
+            json!(null),
+            json!("CANCELLED"),
+        ),
+    ];
+    json!({ "total": rows.len(), "data": rows }).to_string()
+}
+
+/// A voided charge is neither open nor owed, whatever it says: it is left out
+/// of the count of open bills, of what the bills say is owed, and of what
+/// accounts for the balance. The export writes it `cancelled`.
+#[test]
+fn a_voided_charge_is_neither_open_nor_owed() {
+    // Said 0 and not said: the two charges owed on account for the balance.
+    for said in [json!(0), json!(null)] {
+        let server = serve(one_page("187.47", &voided_history(said)));
+        let env = reader_env(&server, "voided");
+        let site = Site::open(&env, &adult1()).unwrap();
+        let a = &items(&readers::accounts_list(&site).unwrap())[0];
+        assert_eq!((a["bills"].as_u64(), a["open_bills"].as_u64()), (Some(6), Some(2)));
+        assert_eq!(a["owed_on_bills"].to_string(), "187.47");
+        let open = readers::bills_list(&site, true, &RangeArgs::default()).unwrap();
+        assert_eq!(ids(&open), ["4996", "2580"]);
+        for id in ["9835", "6323"] {
+            assert_eq!(readers::bill_show(&site, id).unwrap()["open"], false, "{id}");
+        }
+        let mut out = Vec::new();
+        let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+        assert!(finished.trailer.complete);
+        let states: Vec<serde_json::Value> = of_type(&stream_of(&out), "Invoice")
+            .iter()
+            .map(|i| json!([i["identifier"][0]["value"], i["status"]]))
+            .collect();
+        assert_eq!(
+            json!(states),
+            json!([
+                ["8550", "balanced"],
+                ["9658", "balanced"],
+                ["6323", "cancelled"],
+                ["9835", "cancelled"],
+                ["2580", "issued"],
+                ["4996", "issued"],
+            ])
+        );
+        assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+    }
+    // No balance given: a voided charge that does not say leaves nothing
+    // unknown.
+    let server = serve(one_page("null", &voided_history(json!(0))));
+    let env = reader_env(&server, "voided-no-balance");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let a = &items(&readers::accounts_list(&site).unwrap())[0];
+    assert_eq!(a["owed_on_bills"].to_string(), "187.47");
+    let mut out = Vec::new();
+    readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    let voided = stream_of(&out);
+    let voided = of_type(&voided, "Invoice")
+        .into_iter()
+        .find(|i| i["identifier"][0]["value"] == "6323")
+        .unwrap();
+    assert_eq!((&voided["status"], voided.get("totalNet")), (&json!("cancelled"), None));
+    assert!(env.warnings.lines().is_empty(), "{:?}", env.warnings.lines());
+    // A balance that counts the voided charge is not accounted for.
+    for (said, says) in [
+        (json!(0), "add to 187.47, and the account shows 585.23 owed"),
+        (
+            json!(null),
+            "the account shows 585.23 owed, and 1 bill(s) do not say what is owed on them",
+        ),
+    ] {
+        let server = serve(one_page("585.23", &voided_history(said)));
+        let env = reader_env(&server, "voided-owed");
+        let site = Site::open(&env, &adult1()).unwrap();
+        readers::accounts_list(&site).unwrap();
+        let warnings = env.warnings.lines();
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains(says), "{warnings:?}");
+        let mut out = Vec::new();
+        let e = readers::export(&site, &server.base, &mut out, None, None, None)
+            .err()
+            .unwrap();
+        assert_eq!(e.exit_code(), 5);
+        assert!(out.is_empty());
+    }
+}
+
+// ------------------------------------------------------ rows without an id
+
+/// A payment without an id, as two pages hold it.
+fn payment_without_id(amount: &str) -> serde_json::Value {
+    payment_row(None, "2022-02-11T15:50:12", amount, json!("settled"))
+}
+
+/// A charge without an id.
+fn charge_without_id() -> serde_json::Value {
+    charge_row(None, "2019-11-04T05:01:38", "314.76", json!("0.00"), json!(null))
+}
+
+/// A history of two pages. The first holds the payment and the charge
+/// without an id after `more`; the second holds `then` before 6 rows of its
+/// own, one of them a payment without an id. `total` is what both answers
+/// count.
+fn without_ids(total: usize, more: Vec<serde_json::Value>, then: Vec<serde_json::Value>) -> Routes {
+    let mut first = more;
+    first.extend([
+        charge_row(Some(6244), "2019-11-29T01:04:46", "143.79", json!("0.00"), json!(null)),
+        payment_without_id("-215.49"),
+        charge_row(Some(9754), "2024-03-20T15:23:05", "590.40", json!(590.40), json!(null)),
+        payment_row(Some(5070), "2024-12-16T11:16:44", "-874.83", json!("completed")),
+        charge_without_id(),
+    ]);
+    let mut second = then;
+    second.extend([
+        charge_row(Some(9874), "2021-01-13T05:23:05", "324.30", json!(0), json!(null)),
+        payment_row(Some(7059), "2019-01-21T09:34:17", "-549.69", json!("declined")),
+        payment_row(None, "2021-06-11T14:52:22", "-297.27", json!("submitted")),
+        charge_row(Some(6827), "2020-10-10T16:02:18", "553.78", json!(90.70), json!(null)),
+        payment_row(Some(5245), "2019-07-27T14:24:59", "-853.97", json!("processing")),
+        charge_row(Some(6673), "2023-12-01T04:54:48", "425.29", json!("0.00"), json!(null)),
+    ]);
+    let mut r = one_page("681.10", &json!({ "total": total, "data": first }).to_string());
+    r.insert(page_at(2), ok(&json!({ "total": total, "data": second }).to_string()));
+    r.insert(page_at(3), ok(&json!({ "total": total, "data": [] }).to_string()));
+    r
+}
+
+/// The ids of the bills, and what the export says was left out for want of
+/// one.
+fn left_out_without_id(routes: Routes) -> (Vec<String>, String, usize) {
+    let server = serve(routes);
+    let env = reader_env(&server, "no-ids");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    let finished = readers::export(&site, &server.base, &mut out, None, None, None).unwrap();
+    assert!(finished.trailer.complete);
+    let pages = targets(&server).iter().filter(|t| t.contains("pageNumber=")).count();
+    let bills = ids(&readers::bills_list(&site, false, &RangeArgs::default()).unwrap());
+    let skipped = stream_of(&out).last().unwrap()["skipped"].to_string();
+    (bills, skipped, pages)
+}
+
+/// A row without an id that a later page repeats is the same row, counted
+/// once; two alike on one page are two; one that differs in any field is
+/// another.
+#[test]
+fn a_row_without_an_id_that_a_later_page_repeats_is_counted_once() {
+    let bills = ["9754", "6673", "9874", "6827", "6244"];
+    let repeated = || vec![payment_without_id("-215.49"), charge_without_id()];
+    for (total, more, then, payments) in [
+        (11, vec![], vec![], 2),
+        (11, vec![], repeated(), 2),
+        (12, repeated()[..1].to_vec(), vec![], 3),
+        (12, repeated()[..1].to_vec(), repeated(), 3),
+        (12, vec![], vec![payment_without_id("-215.48")], 3),
+    ] {
+        let (listed, skipped, pages) = left_out_without_id(without_ids(total, more, then));
+        assert_eq!(listed, bills);
+        assert_eq!(pages, 2, "read to its total of {total}");
+        assert!(
+            skipped.contains(&format!("{payments} payment(s) came without an id")),
+            "{skipped}"
+        );
+        assert!(skipped.contains("1 bill(s) came without an id"), "{skipped}");
+    }
+}
+
+/// Two pages that each hold a row of their own without an id, alike in every
+/// field, cannot be told from a repeat: the history is short of its total,
+/// exit 5, and nothing is written.
+#[test]
+fn rows_without_an_id_alike_on_two_pages_leave_the_history_short() {
+    let server = serve(without_ids(12, vec![], vec![payment_without_id("-215.49")]));
+    let env = reader_env(&server, "no-ids-short");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let mut out = Vec::new();
+    let e = readers::export(&site, &server.base, &mut out, None, None, None)
+        .err()
+        .unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(e.to_string().contains("counts 12 rows and its pages held 11"), "{e}");
+    assert!(out.is_empty());
+}
+
+/// A later page of nothing but repeats, with an id or without, is exit 5 at
+/// that page.
+#[test]
+fn a_page_of_only_repeated_rows_without_an_id_is_exit_5() {
+    let mut routes = without_ids(13, vec![], vec![]);
+    let page = json!({ "total": 13, "data": [charge_without_id(), payment_without_id("-215.49")] });
+    routes.insert(page_at(2), ok(&page.to_string()));
+    let server = serve(routes);
+    let env = reader_env(&server, "no-ids-no-paging");
+    let site = Site::open(&env, &adult1()).unwrap();
+    let e = readers::bills_list(&site, false, &RangeArgs::default()).err().unwrap();
+    assert_eq!(e.exit_code(), 5);
+    assert!(
+        e.to_string().contains("page 2 with the rows of the pages before it"),
+        "{e}"
+    );
+    assert_eq!(targets(&server).iter().filter(|t| t.contains("pageNumber=")).count(), 2);
 }
 
 #[test]

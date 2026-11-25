@@ -100,12 +100,13 @@ bills them, with the currency, or with none and a warning when the clinic
 was not read.
 
 When the open charges' `outstandingBalance` does not add up to the
-account's `billingBalance`, `records export` is exit 5 before the stream,
-with an error that names neither figure, and `accounts list` and
-`bills list` warn on stderr with both. It is the sign that
+account's `billingBalance`, or a charge does not say what is owed on it and
+the balance does not settle it (`docs/api.md`), `records export` is exit 5
+before the stream, with an error that names no figure, and `accounts list`
+and `bills list` warn on stderr with what each says. It is the sign that
 `outstandingBalance` is not what is owed on each charge, which the API has
 not yet been seen to confirm, and a store summing the open Invoices would
-keep a wrong balance.
+keep a wrong balance. A voided charge counts nowhere as owed.
 
 There are no `DocumentReference`s: Embryo Options serves no statement or
 receipt files (`docs/api.md`).

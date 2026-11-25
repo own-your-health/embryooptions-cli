@@ -2,8 +2,21 @@
 
 ## 0.1.1
 
+- A voided charge is not open and not owed, whatever `outstandingBalance`
+  it gives, and only an exact `void`, `voided`, `cancelled` or `canceled`
+  status voids one.
+- A charge without `outstandingBalance` is owed 0 when the charges that
+  give one account for the account's balance. Otherwise what is owed is not
+  known: the listings warn and `records export` is exit 5, with a balance
+  below 0 or not given too. It wrote such a charge as an open Invoice
+  without a total.
+- A payment whose status is `charged back`, however its words are joined,
+  is `failed`; it was `unconfirmed`. A `PAY` row whose subtype says so is a
+  refund.
+- A row without an id that a later page repeats is read once, so it no
+  longer stands in for a row the history lacks.
 - `docs/api.md` states the forms of each field on its own, and the tests cover
-  each form. No change in behavior.
+  each form.
 
 ## 0.1.0
 
