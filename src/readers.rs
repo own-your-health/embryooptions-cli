@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use crate::bill::{self, id_of, Cents, Mapper};
 use crate::cli::{DownloadArgs, BIN};
 use crate::portal::{now_rfc3339, Site};
-use crate::reads::{self, ClinicInfo, Kind, Member, Row};
+use crate::reads::{self, ClinicInfo, Kind, Member, Row, Settlement};
 
 /// `meta.source` on every resource embryooptions maps.
 pub const META_SOURCE: &str = "embryooptions:site";
@@ -177,8 +177,9 @@ fn warn_unknown(site: &Site, rows: &[Row], unidentified: &[Kind]) {
 pub fn book(site: &Site) -> Result<Book, CliError> {
     let member = reads::member(&site.read(MEMBER_PATH)?)?;
     let clinic = clinic(site)?;
-    let (rows, unidentified) = history(site)?;
+    let (mut rows, unidentified) = history(site)?;
     warn_unknown(site, &rows, &unidentified);
+    settle_by_balance(&member, &mut rows);
     let slug = site.clinic().slug().to_string();
     let organization_name = clinic
         .name
@@ -204,6 +205,19 @@ pub fn book(site: &Site) -> Result<Book, CliError> {
     })
 }
 
+/// `outstandingBalance` is optional. Without one on any charge, nothing in a
+/// row says whether a bill is open. An account whose balance is
+/// zero owes nothing on any bill: each charge is owed 0. With a balance above
+/// zero, what is open on which bill is not known, and is left unsaid.
+fn settle_by_balance(member: &Member, rows: &mut [Row]) {
+    let none_says = !rows.iter().any(|r| r.kind == Kind::Charge && r.outstanding.is_some());
+    if none_says && member.balance.is_some_and(|b| b.0 == 0) {
+        for r in rows.iter_mut().filter(|r| r.kind == Kind::Charge) {
+            r.outstanding = Some(Cents(0));
+        }
+    }
+}
+
 impl Book {
     fn provider(&self) -> bill::Provider {
         bill::Provider {
@@ -221,7 +235,18 @@ impl Book {
     /// account shows owed, what each says: the sign that
     /// `outstandingBalance` is not what is owed on each bill.
     pub fn balance_mismatch(&self) -> Option<String> {
-        let (owed, balance) = (self.owed_on_bills()?, self.member.balance?);
+        let balance = self.member.balance?;
+        let Some(owed) = self.owed_on_bills() else {
+            // No bill says what is owed on it, and the account owes: which
+            // bills are open is not known (an account that owes nothing
+            // settles every bill, `settle_by_balance`).
+            return (balance.0 > 0 && self.of(Kind::Charge).next().is_some()).then(|| {
+                format!(
+                    "the account shows {} owed, and no bill says what is owed on it",
+                    balance.decimal()
+                )
+            });
+        };
         (owed != balance).then(|| {
             format!(
                 "the open bills' outstanding balances add to {}, and the account shows {} owed",
@@ -436,11 +461,19 @@ pub const CHARGE_COLUMNS: &[&str] = &["date", "code", "description", "amount"];
 /// takes off.
 const PAID: &[Kind] = &[Kind::Payment, Kind::Refund, Kind::Discount, Kind::Credit];
 
-/// `payments list` (payment-list/v1): payments, refunds, discounts and
-/// credits, newest first, with whether each settled.
+/// The local day, which a payment cannot have settled after.
+fn today() -> String {
+    pk_cli_core::dates::fmt_iso(pk_cli_core::dates::today_local())
+}
+
+/// `payments list` (payment-list/v2): payments, refunds, discounts and
+/// credits, newest first, with where each stands: `settled` only when the
+/// answer shows the money moved, `scheduled` for a date after today,
+/// `pending`, `failed`, or `unconfirmed`.
 pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> {
     let range = &padded(range)?;
     let book = book(site)?;
+    let today = today();
     let items = book
         .rows
         .iter()
@@ -452,17 +485,23 @@ pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> 
                 "date": r.date,
                 "kind": r.kind.as_str(),
                 "type": r.type_id,
+                "subtype": r.sub_type,
                 "amount": money(r.amount),
                 "method": r.method,
                 "note": r.note,
-                "settled": r.is_settled(),
+                "settled": r.is_settled(&today),
+                "state": r.settlement(&today).as_str(),
             })
         })
         .collect();
-    Ok(list("payment", limited(items, range)))
+    // v2: `settled` is true only for the settled state, and `state` and
+    // `subtype` are new.
+    let mut v = list("payment", limited(items, range));
+    v["schema"] = "payment-list/v2".into();
+    Ok(v)
 }
 
-pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "settled"];
+pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "settled", "state"];
 
 // ------------------------------------------------------------ documents
 
@@ -674,13 +713,27 @@ pub fn export<W: Write>(
                 format!("{unknown} row(s) of the billing history of a type the bill mapping does not know, naming no fee, may be bills"),
             ));
         }
-        let (mut unsettled, mut undated) = (0, 0);
+        // Only a settled payment is a payment made: a scheduled, pending,
+        // failed or unconfirmed one is counted, never written as paid.
+        let today = today();
+        let (mut failed, mut waiting, mut unconfirmed, mut undated) = (0, 0, 0, 0);
         let mut payments: Vec<&Row> = book.of(Kind::Payment).collect();
         payments.sort_by(|a, b| a.date.cmp(&b.date).then_with(|| a.id.cmp(&b.id)));
         for r in payments {
-            if !r.is_settled() {
-                unsettled += 1;
-                continue;
+            match r.settlement(&today) {
+                Settlement::Settled => {}
+                Settlement::Failed => {
+                    failed += 1;
+                    continue;
+                }
+                Settlement::Scheduled | Settlement::Pending => {
+                    waiting += 1;
+                    continue;
+                }
+                Settlement::Unconfirmed => {
+                    unconfirmed += 1;
+                    continue;
+                }
             }
             let Some(model) = reads::payment(account, r) else {
                 undated += 1;
@@ -691,9 +744,12 @@ pub fn export<W: Write>(
         undated += book.unidentified.iter().filter(|k| **k == Kind::Payment).count();
         skip_count(
             &mut w,
-            unsettled,
+            failed + waiting + unconfirmed,
             "not_settled",
-            format!("{unsettled} payment(s) the processor turned down (declined, failed, voided) were left out"),
+            format!(
+                "{failed} payment(s) turned down (declined, failed, voided), {waiting} scheduled or pending and \
+                 {unconfirmed} not shown to have settled were left out"
+            ),
         );
         skip_count(
             &mut w,

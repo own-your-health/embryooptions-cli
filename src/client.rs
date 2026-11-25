@@ -34,7 +34,7 @@ use crate::site::Clinic;
 use crate::token::Claims;
 
 /// The header the web app sends the access token in, as `Bearer <token>`
-/// (observed 2026-11-22; the API answers `Authorization` with 401).
+/// (observed; the API answers `Authorization` with 401).
 pub const TOKEN_HEADER: HeaderName = HeaderName::from_static("x-xsrf-token");
 /// The header the web app sends the clinic's id in, beside the token.
 pub const CENTER_HEADER: HeaderName = HeaderName::from_static("ivfcenterid");
@@ -457,7 +457,7 @@ pub struct Answer {
 
 /// The web app's token refresh: `GET /api/Auth/RefreshToken` with the
 /// refresh token as `X-XSRF-TOKEN: Bearer <refresh token>` (the bundle's
-/// `updateToken`, observed 2026-11-22). The answer is a new pair,
+/// `updateToken`, observed). The answer is a new pair,
 /// `{"accessToken", "refreshToken"}`. A 401 or 403 is a sign-in that can no
 /// longer be renewed (exit 3).
 pub const REFRESH: &str = "/api/Auth/RefreshToken";

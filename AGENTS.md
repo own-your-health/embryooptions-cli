@@ -15,11 +15,11 @@ from [cli-common](https://github.com/piekstra/cli-common) and
 Every `pk-cli-*` stays on the cli-common tag medical-common pins.
 
 Status: sign-in, sessions, the token refresh and `api` are built, tested
-offline and seen working against the site (2026-11-22). The readers are
-built on the web app's JavaScript and tested against synthetic answers;
-they have not yet read a real account. `docs/api.md` marks what was seen
-*observed*, what is read from the JavaScript alone *bundle*, and lists
-what the first real read must confirm (Not yet observed).
+offline and seen working against the site. The readers are built on the
+web app's JavaScript and tested against synthetic answers. `docs/api.md`
+marks what was seen *observed*, what is read from the JavaScript alone
+*bundle*, and lists what the first real read must confirm (Not yet
+observed).
 
 ## Layout
 

@@ -117,7 +117,7 @@ command that signs in again:
 | `accounts list` | `account-list/v1`: the account, what is owed, the bills open and the next bill |
 | `bills list [--open] [--since] [--until] [--limit]` | `bill-list/v1`: the fees billed, newest service first, with what is owed on each; `--since` and `--until` filter on the date of service |
 | `bills show <ID>` | `bill/v1`: one fee with its period, freeze date, provider, lab and CPT codes |
-| `payments list [--since] [--until] [--limit]` | `payment-list/v1`: payments, refunds, discounts and credits, with whether each settled |
+| `payments list [--since] [--until] [--limit]` | `payment-list/v2`: payments, refunds, discounts and credits, with where each stands: settled, scheduled, pending, failed or unconfirmed; a payment counts as paid only when it is `settled` |
 | `records export --ndjson [--since] [--patient] [--org]` | `records-stream/v1`: the account, its bills and settled payments as FHIR (`docs/fhir.md`) |
 | `documents list\|download` | `document-list/v1`: empty; Embryo Options serves no bill or receipt files |
 | `api GET <PATH>` | a member API answer under `/api/Members/{memberId}/`, as it came |
