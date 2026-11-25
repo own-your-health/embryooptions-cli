@@ -272,7 +272,9 @@ How the answers are read (`src/reads.rs`):
   hold fewer rows than its `total` is exit 5, so no reader passes part of
   it off as the whole. A row a later page repeats is read once, and a page
   of nothing but rows already read is exit 5: the server is not paging. A
-  bare list is read as every row at once.
+  row without an id is a repeat when an earlier page holds the same JSON;
+  two alike on one page are two rows. A bare list is read as every row at
+  once.
 - A row is a payment, a refund, a discount, a credit or another row by its
   `memberPaymentTypeId`, in any case, from the app's list above. A row of
   any other type, or of none, is a charge, a fee billed, when it names its
@@ -291,26 +293,31 @@ How the answers are read (`src/reads.rs`):
 - A charge's date of service is its billing period's start, else the day it
   was posted (`timestamp`); its period's end is the period's.
 - `outstandingBalance` is read as what is still owed on a charge: above 0
-  is an open bill (`bills list --open`). When the open charges'
-  outstanding balances do not add up to the account's `billingBalance`,
-  `accounts list` and `bills list` warn and `records export` is exit 5.
+  is an open bill (`bills list --open`), unless it is voided. When the
+  open charges' outstanding balances do not add up to the account's
+  `billingBalance`, `accounts list` and `bills list` warn and `records
+  export` is exit 5.
 - A coded `PAY` row with a positive amount, or whose subtype says refund,
-  reversal, chargeback or void, is a refund; a coded `CHG` row with a
-  negative amount is a credit. Such a row contradicts its own code, so only
-  an explicit settled status settles it. A row of any other code that names
-  no fee is of a type not known (above).
-- A charge is voided when its `transactionStatus` says void or cancel.
+  reversal, chargeback (`charged back` too) or void, is a refund; a coded
+  `CHG` row with a negative amount is a credit. Such a row contradicts its
+  own code, so only an explicit settled status settles it. A row of any
+  other code that names no fee is of a type not known (above).
+- A charge is voided when its `transactionStatus` is exactly `void`,
+  `voided`, `cancelled` or `canceled`, in any case; a status that only
+  mentions it (`cancellation requested`) leaves the charge owed.
 - A charge without `outstandingBalance` does not say what is owed on it.
-  When no charge says, the account's `billingBalance` decides: 0 means
-  nothing is owed on any of them, and above 0 `accounts list` and
-  `bills list` warn, the charges' `owes` is null and `records export` is
-  exit 5, writing nothing.
+  When the charges that say (voided ones left out) add up to the account's
+  `billingBalance`, nothing is owed on the ones that do not: so it is for
+  an account that owes 0 and whose charges say nothing. Otherwise, whatever
+  the balance is, `accounts list` and `bills list` warn, the charges'
+  `owes` is null and `records export` is exit 5, writing nothing.
 - A payment is settled only on positive evidence (`Row::settlement`). The
   states are decided in this order:
   1. `failed`: its card was turned down (`DEC`, `EXP`, `INV`, `ERR`), or its
      status says so (such as declined, denied, failed, rejected, voided,
      expired, cancelled, returned, bounced, charged back, unauthorized,
-     error). This outranks a date after today.
+     error), its words joined in whatever way (`charge-back`,
+     `Charged_Back`). This outranks a date after today.
   2. `scheduled`: dated after the local day, whatever its status says. The
      app's "next scheduled payment" is never a payment made.
   3. `pending`: a status such as pending, scheduled, submitted, authorized,

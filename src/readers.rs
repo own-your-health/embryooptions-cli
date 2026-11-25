@@ -88,18 +88,22 @@ pub fn history_page_path(n: usize) -> String {
 /// empty page ends it too. A history that holds fewer rows than its
 /// `total` is exit 5: a reader never passes part of it off as the whole.
 /// A row a later page repeats is read once, and a later page of nothing
-/// but repeats is exit 5: the server is not paging.
+/// but repeats is exit 5: the server is not paging. A row without an id is
+/// a repeat when an earlier page holds the same JSON; two alike on one page
+/// are two rows. Two pages that each hold such a row of their own are short
+/// of their `total`, which is exit 5, rather than one row counted twice.
 fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
     let mut rows = Vec::new();
     let mut unidentified = Vec::new();
     let mut ids = BTreeSet::new();
+    // The rows without an id of the pages before the one being read.
+    let mut without_id: Vec<Value> = Vec::new();
     let mut total = None;
     let mut received = 0usize;
     for n in 1..=MAX_PAGES {
         let page = reads::history_page(&site.read(&history_page_path(n))?)?;
         total = total.or(page.total);
         received += page.len;
-        unidentified.extend(page.unidentified);
         let with_ids = page.rows.len();
         let mut fresh = 0;
         for r in page.rows {
@@ -110,9 +114,18 @@ fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
                 received -= 1;
             }
         }
+        let mut fresh_without_id = Vec::new();
+        for (kind, row) in page.unidentified {
+            if without_id.contains(&row) {
+                received -= 1;
+            } else {
+                unidentified.push(kind);
+                fresh_without_id.push(row);
+            }
+        }
         // A server that ignores `pageNumber` answers the same rows again:
         // reading on would only repeat them, up to the cap.
-        if n > 1 && with_ids > 0 && fresh == 0 {
+        if n > 1 && page.len > 0 && fresh == 0 && (with_ids > 0 || fresh_without_id.is_empty()) {
             return Err(CliError::Upstream(format!(
                 "Embryo Options's billing history answered page {n} with the rows of the pages before it"
             ))
@@ -120,6 +133,7 @@ fn history(site: &Site) -> Result<(Vec<Row>, Vec<Kind>), CliError> {
                 "the API may have changed; `{BIN} api GET <PATH>` shows its pages"
             )));
         }
+        without_id.extend(fresh_without_id);
         let done = match total {
             Some(t) => received as u64 >= t,
             None => page.len < PAGE_SIZE,
@@ -205,16 +219,27 @@ pub fn book(site: &Site) -> Result<Book, CliError> {
     })
 }
 
-/// `outstandingBalance` is optional. Without one on any charge, nothing in a
-/// row says whether a bill is open. An account whose balance is
-/// zero owes nothing on any bill: each charge is owed 0. With a balance above
-/// zero, what is open on which bill is not known, and is left unsaid.
+/// `outstandingBalance` is optional, and nothing else in a row says whether
+/// a bill is open. When the charges that give one (voided ones left out) add
+/// up to the account's balance, they account for all that is owed, and each
+/// charge that gives none is owed 0: so is every charge of an account that
+/// owes nothing and whose charges give none. Otherwise what is open on those
+/// is not known, and is left unsaid ([`Book::balance_mismatch`]).
 fn settle_by_balance(member: &Member, rows: &mut [Row]) {
-    let none_says = !rows.iter().any(|r| r.kind == Kind::Charge && r.outstanding.is_some());
-    if none_says && member.balance.is_some_and(|b| b.0 == 0) {
-        for r in rows.iter_mut().filter(|r| r.kind == Kind::Charge) {
-            r.outstanding = Some(Cents(0));
-        }
+    let said: i64 = rows
+        .iter()
+        .filter(|r| r.kind == Kind::Charge && !r.is_voided())
+        .filter_map(|r| r.outstanding)
+        .map(|c| c.0)
+        .sum();
+    if member.balance != Some(Cents(said)) {
+        return;
+    }
+    for r in rows
+        .iter_mut()
+        .filter(|r| r.kind == Kind::Charge && r.outstanding.is_none())
+    {
+        r.outstanding = Some(Cents(0));
     }
 }
 
@@ -231,22 +256,28 @@ impl Book {
         self.rows.iter().filter(move |r| r.kind == kind)
     }
 
-    /// When the open bills' outstanding balances do not add up to what the
-    /// account shows owed, what each says: the sign that
-    /// `outstandingBalance` is not what is owed on each bill.
+    /// When what the bills say is owed cannot be the account's balance,
+    /// what each says. A bill that does not say what is owed on it, which
+    /// the balance did not settle either ([`settle_by_balance`]), leaves
+    /// that unknown whatever the account shows. Else it is the open bills'
+    /// outstanding balances not adding up to what the account shows owed:
+    /// the sign that `outstandingBalance` is not what is owed on each bill.
     pub fn balance_mismatch(&self) -> Option<String> {
+        let unsaid = self.unsaid();
+        if unsaid > 0 {
+            let account = match self.member.balance {
+                Some(b) => format!("the account shows {} owed", b.decimal()),
+                None => "the account does not show what is owed".into(),
+            };
+            let bills = if self.of(Kind::Charge).all(|r| r.outstanding.is_none()) {
+                "no bill says what is owed on it".into()
+            } else {
+                format!("{unsaid} bill(s) do not say what is owed on them")
+            };
+            return Some(format!("{account}, and {bills}"));
+        }
         let balance = self.member.balance?;
-        let Some(owed) = self.owed_on_bills() else {
-            // No bill says what is owed on it, and the account owes: which
-            // bills are open is not known (an account that owes nothing
-            // settles every bill, `settle_by_balance`).
-            return (balance.0 > 0 && self.of(Kind::Charge).next().is_some()).then(|| {
-                format!(
-                    "the account shows {} owed, and no bill says what is owed on it",
-                    balance.decimal()
-                )
-            });
-        };
+        let owed = self.owed_on_bills()?;
         (owed != balance).then(|| {
             format!(
                 "the open bills' outstanding balances add to {}, and the account shows {} owed",
@@ -256,16 +287,17 @@ impl Book {
         })
     }
 
-    /// What the open bills say is owed, when any says.
+    /// How many bills, not voided, do not say what is owed on them.
+    fn unsaid(&self) -> usize {
+        self.of(Kind::Charge).filter(|r| r.is_unsaid()).count()
+    }
+
+    /// What is owed on the open bills. `None` when there is no bill, or one
+    /// does not say.
     pub fn owed_on_bills(&self) -> Option<Cents> {
-        let owed: Vec<i64> = self
-            .of(Kind::Charge)
-            .filter(|r| r.is_open())
-            .filter_map(|r| r.outstanding)
-            .map(|c| c.0)
-            .collect();
-        let any = self.of(Kind::Charge).any(|r| r.outstanding.is_some());
-        any.then(|| Cents(owed.iter().sum()))
+        self.of(Kind::Charge).next()?;
+        let owed = self.of(Kind::Charge).filter(|r| r.is_open());
+        (self.unsaid() == 0).then(|| Cents(owed.filter_map(|r| r.outstanding).map(|c| c.0).sum()))
     }
 
     /// The patient a sign-in is. `name` is never in the stream.
@@ -284,14 +316,20 @@ impl Book {
     }
 }
 
-/// `accounts list` and `bills list` show the two figures; a warning says
-/// they differ.
+/// `accounts list` and `bills list` show what the account and the bills
+/// say is owed; a warning says when they differ, or when a bill does not say.
 fn warn_mismatch(site: &Site, book: &Book) {
     if let Some(m) = book.balance_mismatch() {
-        site.warn(format!(
-            "{m}: {BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been \
-             seen to confirm"
-        ));
+        let why = if book.unsaid() > 0 {
+            "a bill that gives no `outstandingBalance` has a null `owes`, and `records export` writes nothing (exit 5)"
+                .to_string()
+        } else {
+            format!(
+                "{BIN} reads `outstandingBalance` as what is owed on each bill, which the API has not yet been seen \
+                 to confirm"
+            )
+        };
+        site.warn(format!("{m}: {why}"));
     }
 }
 
@@ -625,9 +663,10 @@ fn skip_count<W: Write>(w: &mut RecordsWriter<W>, n: usize, code: &str, reason: 
 /// the rows of a type not known ([`reads::Kind::Unknown`]), so a store
 /// infers nothing from a stream that may lack a bill.
 ///
-/// Open bills that do not add up to the account's balance are exit 5
-/// before the stream: a store sums the open Invoices into the balance, and
-/// would keep a wrong one. `--since` is in the header only: the member API
+/// Open bills that do not add up to the account's balance, or a bill that
+/// does not say what is owed on it, are exit 5 before the stream: a store
+/// sums the open Invoices into the balance, and would keep a wrong one.
+/// `--since` is in the header only: the member API
 /// takes no date, so every bill and payment is written (DESIGN §1).
 pub fn export<W: Write>(
     site: &Site,
@@ -645,14 +684,26 @@ pub fn export<W: Write>(
     // The figures stay in the listings' warnings: this error may reach a
     // log through medrec, so it says only that they differ.
     if book.balance_mismatch().is_some() {
+        let (why, shown) = if book.unsaid() > 0 {
+            (
+                "a bill does not say what is owed on it, and what the account shows owed does not settle it"
+                    .to_string(),
+                format!("`{BIN} accounts list` and `{BIN} bills list` show what each says"),
+            )
+        } else {
+            (
+                format!(
+                    "the open bills' outstanding balances do not add up to what the account shows owed, and {BIN} \
+                     reads `outstandingBalance` as what is owed on each bill, which the API has not yet been seen to \
+                     confirm"
+                ),
+                format!("`{BIN} accounts list` and `{BIN} bills list --open` show both figures"),
+            )
+        };
         return Err(CliError::Upstream(format!(
-            "the open bills' outstanding balances do not add up to what the account shows owed: {BIN} reads \
-             `outstandingBalance` as what is owed on each bill, which the API has not yet been seen to confirm, \
-             and writes no stream whose bills would give the wrong balance"
+            "{why}: {BIN} writes no stream whose bills would give the wrong balance"
         ))
-        .with_remedy(format!(
-            "`{BIN} accounts list` and `{BIN} bills list --open` show both figures"
-        )));
+        .with_remedy(shown));
     }
     if since.is_some() {
         site.warn(format!(
