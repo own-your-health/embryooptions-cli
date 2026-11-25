@@ -8,9 +8,11 @@
   or `unconfirmed` in `payments list`'s new `state` field (with a new
   `subtype`), and is counted in `records export`'s `not_settled` skip instead
   of written. **Breaking for readers of `settled`:** it is now true only for
-  the `settled` state, so a payment submitted for settlement, one with no
-  status or one dated in the future, which used to be `settled: true`, is
-  `false`; `state` says why. The text table keeps its `settled` column and
+  the `settled` state, and the schema is `payment-list/v2`. A payment
+  submitted for settlement, one dated in the future, or one with no status
+  and no accepted card (unless it is a type the clinic records itself),
+  which used to be `settled: true`, is `false`; `state` says why. The text
+  table keeps its `settled` column and
   adds `state`.
 - The billing history is read in either format (`docs/api.md`): amounts as
   numbers or strings, dates as .NET date-times or written out, the codes

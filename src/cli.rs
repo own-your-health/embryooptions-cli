@@ -233,7 +233,7 @@ pub struct BillShowArgs {
 pub enum PaymentsCmd {
     /// Payments, refunds, discounts and credits, newest first, with where
     /// each stands: settled, scheduled, pending, failed or unconfirmed
-    /// (payment-list/v1). --since and --until filter on the day
+    /// (payment-list/v2). --since and --until filter on the day
     /// each was posted.
     #[command(visible_alias = "ls")]
     List(PaymentsListArgs),

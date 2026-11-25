@@ -993,7 +993,7 @@ fn payments_list_tells_payments_discounts_and_failures_apart() {
     let env = reader_env(&server, "payments");
     let site = Site::open(&env, &adult1()).unwrap();
     let v = readers::payments_list(&site, &RangeArgs::default()).unwrap();
-    assert_eq!(v["schema"], "payment-list/v1");
+    assert_eq!(v["schema"], "payment-list/v2");
     assert_eq!(ids(&v), ["504", "502", "505"]);
     let p = |i: usize| &v["items"][i];
     assert_eq!(

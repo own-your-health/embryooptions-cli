@@ -262,7 +262,7 @@ answers, in this order, before it prints or writes anything:
 | `accounts list` | as above, then `Member/UpComingBills` for a `CRY` member | the account; how many charges and payments, the open charges and what they owe; the upcoming bill |
 | `bills list [--open] [--since] [--until] [--limit]` | as above | the charges: `id`, the billing period (else the day of `timestamp`), `timestamp`, `memberPaymentTypeId`, the fee's name (else the note, else the type), the freeze date, `amount`, `outstandingBalance` |
 | `bills show <ID>` | as above | one charge, with the provider, the lab and its tax id, the CPT codes, the note, the discount type and `allocationDiscountAmount` |
-| `payments list [--since] [--until] [--limit]` | as above | the payments, refunds, discounts and credits: `id`, the day of `timestamp`, the kind, the type, `amount`, the method, the note, whether it settled |
+| `payments list [--since] [--until] [--limit]` | as above | the payments, refunds, discounts and credits: `id`, the day of `timestamp`, the kind, the type, its `paymentSubType`, `amount`, the method, the note, and where it stands (`settled`, and `state`: the settlement states below) |
 | `records export --ndjson` | as above | all of the above (`docs/fhir.md`) |
 | `documents list\|download` | nothing | none: Embryo Options serves no bill or receipt files |
 
@@ -298,8 +298,9 @@ How the answers are read (`src/reads.rs`):
   `accounts list` and `bills list` warn and `records export` is exit 5.
 - A coded `PAY` row with a positive amount, or whose subtype says refund,
   reversal, chargeback or void, is a refund; a coded `CHG` row with a
-  negative amount is a credit. A row of any other code that names no fee is
-  of a type not known (above).
+  negative amount is a credit. Such a row contradicts its own code, so only
+  an explicit settled status settles it. A row of any other code that names
+  no fee is of a type not known (above).
 - A charge is voided when its `transactionStatus` says void or cancel.
 - `outstandingBalance` is optional. Without one on any charge, no row says
   whether its bill is open. When the account's `billingBalance` is 0 every charge is

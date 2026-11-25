@@ -466,7 +466,7 @@ fn today() -> String {
     pk_cli_core::dates::fmt_iso(pk_cli_core::dates::today_local())
 }
 
-/// `payments list` (payment-list/v1): payments, refunds, discounts and
+/// `payments list` (payment-list/v2): payments, refunds, discounts and
 /// credits, newest first, with where each stands: `settled` only when the
 /// answer shows the money moved, `scheduled` for a date after today,
 /// `pending`, `failed`, or `unconfirmed`.
@@ -494,7 +494,11 @@ pub fn payments_list(site: &Site, range: &RangeArgs) -> Result<Value, CliError> 
             })
         })
         .collect();
-    Ok(list("payment", limited(items, range)))
+    // v2: `settled` is true only for the settled state, and `state` and
+    // `subtype` are new.
+    let mut v = list("payment", limited(items, range));
+    v["schema"] = "payment-list/v2".into();
+    Ok(v)
 }
 
 pub const PAYMENT_COLUMNS: &[&str] = &["date", "kind", "amount", "method", "settled", "state"];

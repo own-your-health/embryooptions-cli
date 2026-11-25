@@ -190,6 +190,9 @@ pub struct Row {
     pub method: Option<String>,
     /// `paymentSubType`, such as `MEMBER_INT_PMT` or `RECURRING_FEE`.
     pub sub_type: Option<String>,
+    /// The row's sign or subtype contradicts its code, so `kind` is not what
+    /// the code says (a `PAY` paid back, a `CHG` taken off).
+    pub contradicts_code: bool,
     /// `creditCardSystemStatus`: `ACC` accepted, `DEC`, `EXP`, `INV`, `ERR`.
     pub card_status: Option<String>,
     /// `transactionStatus`, as the payment processor words it.
@@ -294,6 +297,8 @@ impl Row {
             "CenterInitiatedAdvancePayment",
             "CollectedPayment",
         ];
+        // A row that contradicts its own code is nobody's statement: only an
+        // explicit settled status counts.
         let status = self
             .transaction_status
             .as_deref()
@@ -320,7 +325,7 @@ impl Row {
                 let t = self.type_id.as_deref().unwrap_or("").trim();
                 self.kind != Kind::Payment || RECORDED.iter().any(|r| r.eq_ignore_ascii_case(t))
             };
-            return if card.eq_ignore_ascii_case("ACC") || (card.is_empty() && recorded()) {
+            return if !self.contradicts_code && (card.eq_ignore_ascii_case("ACC") || (card.is_empty() && recorded())) {
                 Settlement::Settled
             } else {
                 Settlement::Unconfirmed
@@ -533,6 +538,7 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
         let t = t.to_ascii_uppercase();
         ["REFUND", "REVERS", "CHARGEBACK", "VOID"].iter().any(|w| t.contains(w))
     });
+    let coded_as = kind;
     let kind = match (kind, signed) {
         (Kind::Payment, Some(a)) if code.eq_ignore_ascii_case("PAY") && (a.0 > 0 || reversed) => Kind::Refund,
         (Kind::Charge, Some(a)) if code.eq_ignore_ascii_case("CHG") && a.0 < 0 => Kind::Credit,
@@ -572,6 +578,7 @@ fn row(r: &Value) -> Result<Option<Row>, CliError> {
         codes,
         method: method(r),
         sub_type,
+        contradicts_code: kind != coded_as,
         card_status: text(r, "creditCardSystemStatus"),
         transaction_status: text(r, "transactionStatus"),
     }))
@@ -899,6 +906,32 @@ mod tests {
             kind(json!({"id": 1, "memberPaymentTypeId": "PAY"})),
             (Kind::Payment, None)
         );
+    }
+
+    #[test]
+    fn a_row_that_contradicts_its_code_settles_only_on_an_explicit_status() {
+        let state = |v: Value, card: Option<&str>, status: Option<&str>| {
+            Row {
+                date: Some("2020-06-01".into()),
+                card_status: card.map(str::to_string),
+                transaction_status: status.map(str::to_string),
+                ..row(&v).unwrap().unwrap()
+            }
+            .settlement("2020-06-15")
+        };
+        let pay_back = || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "600.00"});
+        let refund =
+            || json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-600.00", "paymentSubType": "CC_REFUND"});
+        let taken_off = || json!({"id": 1, "memberPaymentTypeId": "CHG", "amount": "-600.00"});
+        for v in [&pay_back as &dyn Fn() -> Value, &refund, &taken_off] {
+            assert_eq!(state(v(), None, None), Settlement::Unconfirmed);
+            assert_eq!(state(v(), Some("ACC"), None), Settlement::Unconfirmed);
+            assert_eq!(state(v(), Some("ACC"), Some("settled")), Settlement::Settled);
+            assert_eq!(state(v(), Some("DEC"), None), Settlement::Failed);
+        }
+        let as_coded = json!({"id": 1, "memberPaymentTypeId": "PAY", "amount": "-600.00"});
+        assert_eq!(state(as_coded.clone(), Some("ACC"), None), Settlement::Settled);
+        assert_eq!(state(as_coded, None, None), Settlement::Unconfirmed);
     }
 
     #[test]
